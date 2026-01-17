@@ -640,17 +640,68 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("🔍 Deep Dive Analysis")
     
-    # Product filter
-    col1, col2 = st.columns(2)
-    with col1:
-        dive_app = st.selectbox("📱 Select Brand", sorted(df['norm_app'].unique()), key='dive_brand')
-    with col2:
+    # Filters row
+    filter_cols = st.columns(3)
+    
+    with filter_cols[0]:
+        # Get available brands from filtered data
+        available_brands = sorted(df['norm_app'].unique())
+        dive_app = st.selectbox("📱 Select Brand", available_brands, key='dive_brand')
+    
+    with filter_cols[1]:
+        # Product filter - combine Product_1, Product_2, Product_3, Product_4
+        product_cols = ['Product_1', 'Product_2', 'Product_3', 'Product_4']
+        
+        # Check if product columns exist in the dataframe
+        existing_product_cols = [col for col in product_cols if col in df.columns]
+        
+        if existing_product_cols:
+            # Get brand-specific data
+            brand_df = df[df['norm_app'] == dive_app]
+            
+            # Collect all unique products from all product columns
+            all_products = set()
+            for col in existing_product_cols:
+                products = brand_df[col].dropna().unique()
+                all_products.update(products)
+            
+            # Filter out empty strings and sort
+            all_products = sorted([p for p in all_products if p and str(p).strip()])
+            
+            if all_products:
+                dive_product = st.selectbox("🏷️ Product Type", ['All'] + all_products, key='dive_product')
+            else:
+                dive_product = st.selectbox("🏷️ Product Type", ['All (No products found)'], key='dive_product', disabled=True)
+        else:
+            dive_product = st.selectbox("🏷️ Product Type", ['All (No product data)'], key='dive_product', disabled=True)
+    
+    with filter_cols[2]:
         dive_rating = st.selectbox("⭐ Select Rating", ['All'] + sorted(df['score'].unique(), reverse=True), key='dive_rating')
     
-    # Filter data
+    # Filter data based on selections
     dive_df = df[df['norm_app'] == dive_app].copy()
+    
+    # Apply product filter if a specific product is selected
+    if existing_product_cols and dive_product not in ['All', 'All (No products found)', 'All (No product data)']:
+        # Filter rows where any of the product columns match the selected product
+        product_mask = False
+        for col in existing_product_cols:
+            if col in dive_df.columns:
+                product_mask |= (dive_df[col] == dive_product)
+        dive_df = dive_df[product_mask]
+    
+    # Apply rating filter
     if dive_rating != 'All':
         dive_df = dive_df[dive_df['score'] == dive_rating]
+    
+    # Display filter info
+    filter_info = f"**{dive_app}**"
+    if dive_product not in ['All', 'All (No products found)', 'All (No product data)']:
+        filter_info += f" → {dive_product}"
+    if dive_rating != 'All':
+        filter_info += f" → {dive_rating}⭐"
+    
+    st.markdown(f"Analyzing: {filter_info}")
     
     # AI Insights Section
     st.markdown("---")
@@ -739,12 +790,16 @@ with tabs[5]:
             insights.append(f"**Positive Skew:** {(high_ratings/total_reviews)*100:.1f}% are promoters. Leverage this for testimonials and reduce the {(low_ratings/total_reviews)*100:.1f}% detractor segment.")
         elif low_ratings > high_ratings:
             insights.append(f"**Negative Trend Alert:** {(low_ratings/total_reviews)*100:.1f}% detractors exceed {(high_ratings/total_reviews)*100:.1f}% promoters. Urgent product/service improvements needed.")
+        else:
+            insights.append(f"**Balanced Distribution:** Ratings are fairly distributed with {(mid_ratings/total_reviews)*100:.1f}% neutral responses. Focus on converting passives to promoters.")
         
         # Insight 3: Review engagement
         if avg_length > 150:
             insights.append(f"**High Engagement:** Average review length of {avg_length:.0f} chars indicates customers are highly invested (positive or negative). Mine these for detailed product insights.")
         elif avg_length < 50:
             insights.append(f"**Low Engagement:** Short reviews ({avg_length:.0f} chars avg) suggest transactional relationships. Consider prompting more detailed feedback.")
+        else:
+            insights.append(f"**Moderate Engagement:** Reviews average {avg_length:.0f} characters, indicating standard customer feedback patterns.")
         
         # Insight 4: Top positive drivers
         if top_positive:
@@ -762,7 +817,7 @@ with tabs[5]:
         
         # Visual: Rating distribution for this brand
         st.markdown("---")
-        st.subheader(f"📊 Rating Distribution for {dive_app}")
+        st.subheader(f"📊 Rating Distribution")
         rating_counts = dive_df['score'].value_counts().sort_index()
         fig_bar = px.bar(
             x=rating_counts.index,
@@ -772,29 +827,59 @@ with tabs[5]:
             color_continuous_scale='RdYlGn'
         )
         st.plotly_chart(dark_chart(fig_bar), use_container_width=True)
+        
+        # Product distribution if product filter is active
+        if existing_product_cols and dive_product == 'All':
+            st.subheader(f"🏷️ Product Distribution for {dive_app}")
+            product_counts = {}
+            for col in existing_product_cols:
+                if col in dive_df.columns:
+                    counts = dive_df[col].value_counts()
+                    for prod, count in counts.items():
+                        if prod and str(prod).strip():
+                            product_counts[prod] = product_counts.get(prod, 0) + count
+            
+            if product_counts:
+                fig_prod = px.bar(
+                    x=list(product_counts.keys()),
+                    y=list(product_counts.values()),
+                    labels={'x': 'Product', 'y': 'Mentions'},
+                    color=list(product_counts.values()),
+                    color_continuous_scale='Viridis'
+                )
+                fig_prod.update_layout(showlegend=False)
+                st.plotly_chart(dark_chart(fig_prod), use_container_width=True)
     
     else:
-        st.info(f"ℹ️ No reviews available for {dive_app}" + (f" with rating {dive_rating}" if dive_rating != 'All' else ""))
+        st.info(f"ℹ️ No reviews available for the selected filters")
     
     # Sample Reviews
     st.markdown("---")
     st.subheader("📝 Sample Reviews")
     
-    sample_rating_filter = st.selectbox("Filter by Rating", ['All'] + sorted(dive_df['score'].unique(), reverse=True), key='sample_rating')
+    sample_rating_filter = st.selectbox("Filter by Rating", ['All'] + sorted(dive_df['score'].unique(), reverse=True) if not dive_df.empty else ['All'], key='sample_rating')
     
     sample_display_df = dive_df if sample_rating_filter == 'All' else dive_df[dive_df['score'] == sample_rating_filter]
     
     if not sample_display_df.empty:
         st.write(f"Showing up to 10 reviews ({len(sample_display_df)} total)")
         for idx, row in sample_display_df.head(10).iterrows():
-            with st.expander(f"⭐ {row['score']} - {row['at'].strftime('%Y-%m-%d')} ({row['char_count']} chars)"):
+            # Get products for this review
+            review_products = []
+            for col in existing_product_cols:
+                if col in row.index and row[col] and str(row[col]).strip():
+                    review_products.append(str(row[col]))
+            
+            product_tag = f" | Products: {', '.join(review_products)}" if review_products else ""
+            
+            with st.expander(f"⭐ {row['score']} - {row['at'].strftime('%Y-%m-%d')} ({row['char_count']} chars){product_tag}"):
                 st.write(row['content'] if row['content'] else "_No review text_")
     else:
         st.info("No reviews match this selection.")
     
     # Sentiment bucket breakdown
     st.markdown("---")
-    st.subheader("🎭 Sentiment Distribution")
+    st.subheader("🎭 Sentiment Distribution (All Brands)")
     sent_dist = df.groupby(['norm_app', 'sentiment_bucket']).size().reset_index(name='Count')
     
     # Convert categorical to string to avoid plotly errors
