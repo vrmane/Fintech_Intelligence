@@ -21,11 +21,25 @@ st.set_page_config(
 # ==========================================
 APP_MAP = {
     'moneyview': 'MoneyView',
+    'money view': 'MoneyView',
     'kreditbee': 'KreditBee',
+    'kredit bee': 'KreditBee',
     'navi': 'Navi',
     'kissht': 'Kissht',
     'fibe': 'Fibe',
-    'earlysalary': 'Fibe'
+    'earlysalary': 'EarlySalary',
+    'early salary': 'EarlySalary',
+    'cashe': 'Cashe',
+    'stashfin': 'StashFin',
+    'stash fin': 'StashFin',
+    'mpokket': 'mPokket',
+    'lazypay': 'LazyPay',
+    'lazy pay': 'LazyPay',
+    'simpl': 'Simpl',
+    'payme': 'PayMe',
+    'pay me': 'PayMe',
+    'creditwise': 'CreditWise',
+    'credit wise': 'CreditWise'
 }
 
 RATING_ORDER = [1, 2, 3, 4, 5]
@@ -35,7 +49,16 @@ COLOR_MAP = {
     'KreditBee': '#ff9f00',
     'Navi': '#00ff9d',
     'Kissht': '#ff0055',
-    'Fibe': '#bc13fe'
+    'Fibe': '#bc13fe',
+    'EarlySalary': '#ff6b6b',
+    'Cashe': '#4ecdc4',
+    'StashFin': '#95e1d3',
+    'mPokket': '#f38181',
+    'LazyPay': '#aa96da',
+    'Simpl': '#fcbad3',
+    'PayMe': '#ffffd2',
+    'CreditWise': '#a8d8ea',
+    'default': '#94a3b8'
 }
 
 # ==========================================
@@ -533,7 +556,7 @@ with tabs[1]:
         nbins=50,
         color='norm_app',
         marginal='box',
-        color_discrete_map=COLOR_MAP
+        color_discrete_map={**COLOR_MAP, **{app: COLOR_MAP.get(app, COLOR_MAP['default']) for app in df['norm_app'].unique()}}
     )
     st.plotly_chart(dark_chart(fig2), use_container_width=True)
 
@@ -595,7 +618,7 @@ with tabs[4]:
         y='Count',
         color='norm_app',
         markers=True,
-        color_discrete_map=COLOR_MAP
+        color_discrete_map={**COLOR_MAP, **{app: COLOR_MAP.get(app, COLOR_MAP['default']) for app in v['norm_app'].unique()}}
     )
     st.plotly_chart(dark_chart(fig), use_container_width=True)
     
@@ -608,32 +631,169 @@ with tabs[4]:
         y='score',
         color='norm_app',
         markers=True,
-        color_discrete_map=COLOR_MAP
+        color_discrete_map={**COLOR_MAP, **{app: COLOR_MAP.get(app, COLOR_MAP['default']) for app in rating_trend['norm_app'].unique()}}
     )
     fig2.update_yaxes(range=[1, 5])
     st.plotly_chart(dark_chart(fig2), use_container_width=True)
 
 # ---- TAB 6: DEEP DIVE ----
 with tabs[5]:
-    st.subheader("🔍 Sample Reviews")
+    st.subheader("🔍 Deep Dive Analysis")
     
+    # Product filter
     col1, col2 = st.columns(2)
     with col1:
-        sample_app = st.selectbox("Select Brand", sorted(df['norm_app'].unique()))
+        dive_app = st.selectbox("📱 Select Brand", sorted(df['norm_app'].unique()), key='dive_brand')
     with col2:
-        sample_rating = st.selectbox("Select Rating", sorted(df['score'].unique(), reverse=True))
+        dive_rating = st.selectbox("⭐ Select Rating", ['All'] + sorted(df['score'].unique(), reverse=True), key='dive_rating')
     
-    sample_df = df[(df['norm_app'] == sample_app) & (df['score'] == sample_rating)]
+    # Filter data
+    dive_df = df[df['norm_app'] == dive_app].copy()
+    if dive_rating != 'All':
+        dive_df = dive_df[dive_df['score'] == dive_rating]
     
-    if not sample_df.empty:
-        st.write(f"Showing up to 10 reviews ({len(sample_df)} total)")
-        for idx, row in sample_df.head(10).iterrows():
+    # AI Insights Section
+    st.markdown("---")
+    st.subheader(f"🤖 AI Insights for {dive_app}")
+    
+    if not dive_df.empty:
+        # Calculate key metrics
+        total_reviews = len(dive_df)
+        avg_rating = dive_df['score'].mean()
+        detractor_pct = (dive_df['score'] <= 2).mean() * 100
+        promoter_pct = (dive_df['score'] >= 4).mean() * 100
+        nps_score = promoter_pct - detractor_pct
+        avg_length = dive_df['char_count'].mean()
+        
+        # Top positive themes
+        top_positive = []
+        if net_cols:
+            pos_df = dive_df[dive_df['score'] >= 4]
+            if not pos_df.empty:
+                for col in net_cols:
+                    pct = (pos_df[col].sum() / len(pos_df)) * 100
+                    if pct > 5:  # Only themes mentioned in >5% of reviews
+                        top_positive.append((col.replace('[NET]', '').strip(), pct))
+                top_positive = sorted(top_positive, key=lambda x: x[1], reverse=True)[:3]
+        
+        # Top negative themes
+        top_negative = []
+        if net_cols:
+            neg_df = dive_df[dive_df['score'] <= 2]
+            if not neg_df.empty:
+                for col in net_cols:
+                    pct = (neg_df[col].sum() / len(neg_df)) * 100
+                    if pct > 5:
+                        top_negative.append((col.replace('[NET]', '').strip(), pct))
+                top_negative = sorted(top_negative, key=lambda x: x[1], reverse=True)[:3]
+        
+        # Display insights in cards
+        insight_cols = st.columns(2)
+        
+        with insight_cols[0]:
+            st.markdown(f"""
+            <div class="insight-box">
+                <h4>📊 Performance Overview</h4>
+                <ul>
+                    <li><strong>NPS Score:</strong> {nps_score:.1f} {'🟢' if nps_score > 50 else '🟡' if nps_score > 0 else '🔴'}</li>
+                    <li><strong>Average Rating:</strong> {avg_rating:.2f}/5.0 ⭐</li>
+                    <li><strong>Total Reviews:</strong> {total_reviews:,}</li>
+                    <li><strong>Promoter Rate:</strong> {promoter_pct:.1f}%</li>
+                    <li><strong>Detractor Rate:</strong> {detractor_pct:.1f}%</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with insight_cols[1]:
+            st.markdown(f"""
+            <div class="insight-box">
+                <h4>💡 Quick Stats</h4>
+                <ul>
+                    <li><strong>Avg Review Length:</strong> {avg_length:.0f} characters</li>
+                    <li><strong>Most Common Rating:</strong> {dive_df['score'].mode().iloc[0] if not dive_df['score'].mode().empty else 'N/A'} ⭐</li>
+                    <li><strong>Review Distribution:</strong> {(dive_df['length_group'] == '>=30 Chars').mean() * 100:.1f}% detailed</li>
+                    <li><strong>Engagement:</strong> {'High' if avg_length > 100 else 'Medium' if avg_length > 50 else 'Low'}</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Strategic Insights
+        st.markdown("### 🎯 Strategic Insights")
+        
+        insights = []
+        
+        # Insight 1: Overall sentiment
+        if nps_score > 50:
+            insights.append(f"**Strong Brand Advocacy:** With an NPS of {nps_score:.1f}, {dive_app} has excellent customer loyalty. Focus on amplifying positive word-of-mouth and case studies.")
+        elif nps_score > 0:
+            insights.append(f"**Moderate Performance:** NPS of {nps_score:.1f} indicates room for improvement. Prioritize addressing detractor pain points to boost advocacy.")
+        else:
+            insights.append(f"**Critical Action Required:** Negative NPS of {nps_score:.1f} signals serious customer satisfaction issues. Immediate intervention needed on key pain points.")
+        
+        # Insight 2: Rating distribution pattern
+        high_ratings = (dive_df['score'] >= 4).sum()
+        low_ratings = (dive_df['score'] <= 2).sum()
+        mid_ratings = (dive_df['score'] == 3).sum()
+        
+        if high_ratings > low_ratings * 2:
+            insights.append(f"**Positive Skew:** {(high_ratings/total_reviews)*100:.1f}% are promoters. Leverage this for testimonials and reduce the {(low_ratings/total_reviews)*100:.1f}% detractor segment.")
+        elif low_ratings > high_ratings:
+            insights.append(f"**Negative Trend Alert:** {(low_ratings/total_reviews)*100:.1f}% detractors exceed {(high_ratings/total_reviews)*100:.1f}% promoters. Urgent product/service improvements needed.")
+        
+        # Insight 3: Review engagement
+        if avg_length > 150:
+            insights.append(f"**High Engagement:** Average review length of {avg_length:.0f} chars indicates customers are highly invested (positive or negative). Mine these for detailed product insights.")
+        elif avg_length < 50:
+            insights.append(f"**Low Engagement:** Short reviews ({avg_length:.0f} chars avg) suggest transactional relationships. Consider prompting more detailed feedback.")
+        
+        # Insight 4: Top positive drivers
+        if top_positive:
+            themes_str = ", ".join([f"{t[0]} ({t[1]:.1f}%)" for t in top_positive[:2]])
+            insights.append(f"**Success Drivers:** Customers praise {themes_str}. Double down on these strengths in marketing and product development.")
+        
+        # Insight 5: Top concerns
+        if top_negative:
+            themes_str = ", ".join([f"{t[0]} ({t[1]:.1f}%)" for t in top_negative[:2]])
+            insights.append(f"**Critical Pain Points:** Main complaints are {themes_str}. Prioritize these in your product roadmap and customer success initiatives.")
+        
+        # Display insights
+        for i, insight in enumerate(insights, 1):
+            st.markdown(f"{i}. {insight}")
+        
+        # Visual: Rating distribution for this brand
+        st.markdown("---")
+        st.subheader(f"📊 Rating Distribution for {dive_app}")
+        rating_counts = dive_df['score'].value_counts().sort_index()
+        fig_bar = px.bar(
+            x=rating_counts.index,
+            y=rating_counts.values,
+            labels={'x': 'Rating', 'y': 'Count'},
+            color=rating_counts.index,
+            color_continuous_scale='RdYlGn'
+        )
+        st.plotly_chart(dark_chart(fig_bar), use_container_width=True)
+    
+    else:
+        st.info(f"ℹ️ No reviews available for {dive_app}" + (f" with rating {dive_rating}" if dive_rating != 'All' else ""))
+    
+    # Sample Reviews
+    st.markdown("---")
+    st.subheader("📝 Sample Reviews")
+    
+    sample_rating_filter = st.selectbox("Filter by Rating", ['All'] + sorted(dive_df['score'].unique(), reverse=True), key='sample_rating')
+    
+    sample_display_df = dive_df if sample_rating_filter == 'All' else dive_df[dive_df['score'] == sample_rating_filter]
+    
+    if not sample_display_df.empty:
+        st.write(f"Showing up to 10 reviews ({len(sample_display_df)} total)")
+        for idx, row in sample_display_df.head(10).iterrows():
             with st.expander(f"⭐ {row['score']} - {row['at'].strftime('%Y-%m-%d')} ({row['char_count']} chars)"):
                 st.write(row['content'] if row['content'] else "_No review text_")
     else:
         st.info("No reviews match this selection.")
     
     # Sentiment bucket breakdown
+    st.markdown("---")
     st.subheader("🎭 Sentiment Distribution")
     sent_dist = df.groupby(['norm_app', 'sentiment_bucket']).size().reset_index(name='Count')
     
