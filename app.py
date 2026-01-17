@@ -15,36 +15,42 @@ def init_connection():
 
 supabase = init_connection()
 
-# 3. Fetch ALL Data (Pagination Loop)
+# 3. Fetch ALL Data (Fixed Pagination)
 @st.cache_data(ttl=600) 
 def get_data():
     all_rows = []
     start = 0
-    batch_size = 20000  # Fetch 20k rows per request
+    # We set this to 1000 because Supabase's default API limit is 1000.
+    # If we ask for more, the API cuts us off at 1000, and our loop logic breaks.
+    batch_size = 1000 
+    
+    # Progress placeholder
+    progress_text = st.empty()
     
     while True:
-        # Fetch a batch of rows using range (start index to end index)
+        progress_text.text(f"Fetching rows {start} to {start + batch_size}...")
+        
+        # Fetch batch
         response = supabase.table("reviews").select("*").range(start, start + batch_size - 1).execute()
         rows = response.data
         
-        # If no rows returned, we have reached the absolute end
         if not rows:
             break
             
         all_rows.extend(rows)
         
-        # If we got fewer rows than the batch size, it means this was the last batch
+        # If we get fewer than batch_size, we've reached the end
         if len(rows) < batch_size:
             break
             
-        # Move the pointer for the next batch
         start += batch_size
 
+    progress_text.empty() # Clear the progress text
+    
     # Convert to DataFrame
     df = pd.DataFrame(all_rows)
     
     if not df.empty:
-        # Convert columns to correct types
         if 'Review_Date' in df.columns:
             df['Review_Date'] = pd.to_datetime(df['Review_Date'])
         if 'Inserted_On' in df.columns:
@@ -59,7 +65,7 @@ def get_data():
 st.title("📊 App Reviews Dashboard")
 
 # Load Data
-with st.spinner('Fetching all reviews from Supabase...'):
+with st.spinner('Loading data... (This may take a moment for 40k+ rows)'):
     df = get_data()
 
 if df.empty:
@@ -68,11 +74,9 @@ else:
     # --- SIDEBAR FILTERS ---
     st.sidebar.header("Filters")
     
-    # Filter by App Name (Sorted alphabetically)
     app_list = ["All"] + sorted(list(df['App_Name'].dropna().unique()))
     selected_app = st.sidebar.selectbox("Select App", app_list)
     
-    # Filter by Rating
     rating_filter = st.sidebar.slider("Filter by Rating", 1, 5, (1, 5))
 
     # Apply Filters
@@ -114,7 +118,6 @@ else:
     with col_chart2:
         st.subheader("Reviews Over Time")
         if not filtered_df.empty:
-            # Group by Month for cleaner trend line
             trend_df = filtered_df.set_index('Review_Date').resample('M').size().reset_index(name='Count')
             fig_line = px.line(trend_df, x='Review_Date', y='Count', markers=True)
             st.plotly_chart(fig_line, use_container_width=True)
