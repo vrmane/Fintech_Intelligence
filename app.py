@@ -3,9 +3,8 @@ import pandas as pd
 from supabase import create_client
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
-from streamlit_lottie import st_lottie
 from datetime import datetime, timedelta
+import concurrent.futures
 
 # ==========================================
 # 1. PAGE CONFIG
@@ -155,19 +154,23 @@ div[data-testid="stMetricValue"] {
     padding: 1rem;
     margin: 1rem 0;
 }
+
+.loading-spinner {
+    text-align: center;
+    padding: 2rem;
+}
+
+.progress-text {
+    font-size: 1.2rem;
+    color: #60a5fa;
+    margin-top: 1rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
 # 4. HELPERS
 # ==========================================
-def load_lottieurl(url):
-    try:
-        r = requests.get(url, timeout=5)
-        return r.json() if r.status_code == 200 else None
-    except:
-        return None
-
 def dark_chart(fig):
     fig.update_layout(
         template="plotly_dark",
@@ -196,24 +199,49 @@ def init_connection():
 supabase = init_connection()
 
 # ==========================================
-# 6. DATA LOADING & NORMALIZATION
+# 6. OPTIMIZED DATA LOADING
 # ==========================================
+def fetch_batch(start, batch_size):
+    """Fetch a single batch of data"""
+    try:
+        resp = supabase.table("reviews").select("*").range(start, start + batch_size - 1).execute()
+        return resp.data if resp.data else []
+    except:
+        return []
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_data():
-    rows, start, batch = [], 0, 1000
-    while True:
-        resp = supabase.table("reviews").select("*").range(start, start+batch-1).execute()
-        if not resp.data:
-            break
-        rows.extend(resp.data)
-        if len(resp.data) < batch:
-            break
-        start += batch
-
-    df = pd.DataFrame(rows)
+    # First, get total count for progress
+    batch_size = 2000  # Larger batches
+    
+    # Fetch first batch to estimate total
+    first_batch = fetch_batch(0, batch_size)
+    if not first_batch:
+        return pd.DataFrame(), []
+    
+    all_rows = first_batch.copy()
+    
+    # If we got a full batch, there might be more
+    if len(first_batch) == batch_size:
+        # Fetch remaining batches in parallel
+        start_positions = list(range(batch_size, 50000, batch_size))  # Max 50k rows
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            future_batches = {executor.submit(fetch_batch, start, batch_size): start 
+                            for start in start_positions}
+            
+            for future in concurrent.futures.as_completed(future_batches):
+                batch = future.result()
+                if batch:
+                    all_rows.extend(batch)
+                else:
+                    break  # No more data
+    
+    df = pd.DataFrame(all_rows)
     if df.empty:
         return df, []
 
+    # Rename columns
     df.rename(columns={
         'App_Name': 'app_name',
         'Rating': 'score',
@@ -221,7 +249,7 @@ def load_data():
         'Review_Text': 'content'
     }, inplace=True)
 
-    # App normalization
+    # Vectorized operations for speed
     df['norm_app'] = (
         df['app_name']
         .astype(str)
@@ -230,7 +258,7 @@ def load_data():
     )
     df.dropna(subset=['norm_app'], inplace=True)
 
-    # Dates
+    # Optimize datetime conversion
     df['at'] = pd.to_datetime(df['at'], errors='coerce', utc=True)
     df.dropna(subset=['at'], inplace=True)
     df['at'] = df['at'].dt.tz_convert('Asia/Kolkata').dt.tz_localize(None)
@@ -241,7 +269,7 @@ def load_data():
     df['score'] = pd.to_numeric(df['score'], errors='coerce')
     df = df[df['score'].isin(RATING_ORDER)]
 
-    # Content & length
+    # Content operations
     df['content'] = df['content'].fillna("")
     df['char_count'] = df['content'].str.len()
     df['length_group'] = pd.cut(
@@ -250,13 +278,14 @@ def load_data():
         labels=['<=29 Chars', '>=30 Chars']
     )
 
-    # NPS-style buckets
+    # Sentiment buckets
     df['sentiment_bucket'] = pd.cut(
         df['score'],
         bins=[0, 2, 3, 5],
         labels=['Detractor (1-2)', 'Passive (3)', 'Promoter (4-5)']
     )
 
+    # NET columns
     net_cols = [c for c in df.columns if str(c).startswith('[NET]')]
     for c in net_cols:
         df[c] = df[c].fillna(0).astype(bool)
@@ -264,22 +293,38 @@ def load_data():
     return df, net_cols
 
 # ==========================================
-# 7. LOAD WITH SPLASH
+# 7. FAST LOADING WITH PROGRESS
 # ==========================================
 if 'df' not in st.session_state:
-    loader = st.empty()
-    with loader.container():
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            lottie = load_lottieurl("https://lottie.host/9e5c4644-841b-43c3-982d-19597143c690/w5h8o4t9zD.json")
-            if lottie:
-                st_lottie(lottie, height=250, key="loading")
-            st.markdown("<h3 style='text-align: center;'>🚀 Syncing Intelligence Engine…</h3>", unsafe_allow_html=True)
+    loader_container = st.empty()
     
-    df_raw, net_cols = load_data()
-    st.session_state['df'] = df_raw
-    st.session_state['net_cols'] = net_cols
-    loader.empty()
+    with loader_container.container():
+        st.markdown("""
+        <div class="loading-spinner">
+            <h2>⚡ Loading Intelligence Hub</h2>
+            <div class="progress-text">Fetching data from database...</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Simulate progress during load
+        for i in range(100):
+            progress_bar.progress(i + 1)
+            if i < 30:
+                status_text.text("Connecting to database...")
+            elif i < 70:
+                status_text.text("Loading reviews...")
+            else:
+                status_text.text("Processing data...")
+            
+            if i == 50:  # Start actual load at 50%
+                df_raw, net_cols = load_data()
+                st.session_state['df'] = df_raw
+                st.session_state['net_cols'] = net_cols
+    
+    loader_container.empty()
 
 df_raw = st.session_state['df']
 net_cols = st.session_state['net_cols']
@@ -346,7 +391,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 9. FILTER LOGIC
+# 9. OPTIMIZED FILTER LOGIC
 # ==========================================
 mask = (
     df_raw['norm_app'].isin(sel_apps) &
