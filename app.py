@@ -96,16 +96,9 @@ def load_data():
 
     # 2. Date Parsing (FIXED FOR IST)
     if 'at' in df.columns:
-        # Step 1: Convert to UTC aware datetime
         df['at'] = pd.to_datetime(df['at'], errors='coerce', utc=True)
-        
-        # Step 2: Convert to IST (Asia/Kolkata)
         df['at'] = df['at'].dt.tz_convert('Asia/Kolkata')
-        
-        # Step 3: Remove Timezone info but keep the IST "Wall Clock" time
-        # This ensures charts group by the correct IST Day/Month
         df['at'] = df['at'].dt.tz_localize(None) 
-        
         df = df.dropna(subset=['at'])
         df['Month'] = df['at'].dt.strftime('%Y-%m')
 
@@ -138,7 +131,7 @@ if df_raw.empty:
 # ==========================================
 st.sidebar.title("🎛️ Slice & Dice")
 
-# A. Date Filter (Defaults to full range)
+# A. Date Filter
 if not df_raw.empty:
     min_date = df_raw['at'].min().date()
     max_date = df_raw['at'].max().date()
@@ -196,50 +189,49 @@ if len(date_range) == 2:
     st.markdown(f"**Data Period:** {date_range[0]} to {date_range[1]} | **Reviews:** {len(df):,}")
 
 # TABS
-tab_sent, tab_prod, tab_drive, tab_barr, tab_qual = st.tabs([
-    "😊 Sentiment (Overall vs MoM)",
-    "📦 Products (Top 5 + Others)",
-    "🚀 Top Drivers (Positive)",
-    "🛑 Top Barriers (Negative)",
-    "📏 Review Quality (Length)"
+# Reorganized to flow logically from High Level -> Detail -> Strategic Drivers
+tab_overview, tab_prod, tab_drive, tab_barr, tab_qual, tab_insights = st.tabs([
+    "📊 Overview & Ratings",
+    "📦 Products",
+    "🚀 Drivers (4-5★)",
+    "🛑 Barriers (1-3★)",
+    "📏 Quality & Sentiment",
+    "🧠 AI & Strategic Insights"
 ])
 
-# === TAB 1: SENTIMENT ===
-with tab_sent:
-    st.subheader("1. Sentiment Analysis")
+# === TAB 1: OVERVIEW & RATINGS ===
+with tab_overview:
+    st.subheader("1. Ratings Distribution & Review Ratios")
 
-    if 'sentiment' not in df.columns:
-        st.error("Sentiment column missing in database.")
-    else:
-        c1, c2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-        with c1:
-            st.markdown("### Overall Sentiment Distribution")
-            sent_overall = df['sentiment'].value_counts().reset_index()
-            sent_overall.columns = ['Sentiment', 'Count']
-            fig_sent_pie = px.pie(sent_overall, names='Sentiment', values='Count', hole=0.4, color='Sentiment',
-                                  color_discrete_map={'Positive': '#2ca02c', 'Negative': '#d62728', 'Neutral': '#ff7f0e'})
-            st.plotly_chart(fig_sent_pie, use_container_width=True)
+    # 7. Overall and Brand wise 12345 Ratings Distribution
+    with c1:
+        st.markdown("### Overall Ratings Distribution")
+        rating_counts = df['score'].value_counts().sort_index().reset_index()
+        rating_counts.columns = ['Rating', 'Count']
+        fig_rating = px.bar(rating_counts, x='Rating', y='Count', color='Rating', text_auto=True,
+                            title="Overall Rating Count")
+        st.plotly_chart(fig_rating, use_container_width=True)
 
-        with c2:
-            st.markdown("### MoM Sentiment Trend")
-            if 'Month' in df.columns:
-                sent_mom = df.groupby(['Month', 'sentiment']).size().reset_index(name='Count')
-                sent_mom['Total'] = sent_mom.groupby('Month')['Count'].transform('sum')
-                sent_mom['Pct'] = (sent_mom['Count'] / sent_mom['Total']) * 100
-
-                fig_sent_mom = px.bar(sent_mom, x='Month', y='Pct', color='sentiment',
-                                      title="Sentiment Share % MoM",
-                                      color_discrete_map={'Positive': '#2ca02c', 'Negative': '#d62728', 'Neutral': '#ff7f0e'})
-                st.plotly_chart(fig_sent_mom, use_container_width=True)
+    # 6. Reviews ratio overall vs 12345 across brands
+    with c2:
+        st.markdown("### Ratings Ratio Across Brands")
+        # Crosstab Brand x Score
+        brand_score = pd.crosstab(df['norm_app'], df['score'], normalize='index') * 100
+        fig_heatmap = px.imshow(brand_score, text_auto='.1f', aspect="auto",
+                                labels=dict(x="Rating", y="Brand", color="%"),
+                                title="Rating % Share per Brand",
+                                color_continuous_scale='RdBu') # Red for low ratings, Blue for high
+        st.plotly_chart(fig_heatmap, use_container_width=True)
 
 # === TAB 2: PRODUCTS ===
 with tab_prod:
     st.subheader("2. Product Volume Analysis")
 
     def get_product_data(dataframe):
-        cols_to_use = [c for c in ['Month', 'norm_app', 'product_1', 'product_2', 'product_3', 'product_4'] if c in dataframe.columns]
-        pm = dataframe[cols_to_use].melt(id_vars=['Month', 'norm_app'], value_name='Product')
+        cols_to_use = [c for c in ['norm_app', 'product_1', 'product_2', 'product_3', 'product_4'] if c in dataframe.columns]
+        pm = dataframe[cols_to_use].melt(id_vars=['norm_app'], value_name='Product')
         return pm[pm['Product'].notna() & (pm['Product'] != '') & (pm['Product'] != 'None')]
 
     prod_df = get_product_data(df)
@@ -247,101 +239,202 @@ with tab_prod:
     if prod_df.empty:
         st.warning("No product data found.")
     else:
-        top_products = prod_df['Product'].value_counts().head(5).index.tolist()
-        prod_df['Product_Grouped'] = prod_df['Product'].apply(lambda x: x if x in top_products else 'Others')
-        st.metric("BASE (Total Product Mentions)", f"{len(prod_df):,}")
+        # 1. Product x Volume with base, count and % across brands
+        st.markdown("### Product Volume Matrix (Base, Count, %)")
+        
+        # Calculate Base (Total reviews per brand in this view)
+        brand_base = prod_df.groupby('norm_app').size().reset_index(name='Brand_Base')
+        
+        # Calculate Product Counts per Brand
+        prod_counts = prod_df.groupby(['Product', 'norm_app']).size().reset_index(name='Count')
+        
+        # Merge to calculate %
+        prod_stats = pd.merge(prod_counts, brand_base, on='norm_app')
+        prod_stats['% of Brand'] = (prod_stats['Count'] / prod_stats['Brand_Base']) * 100
+        
+        # Create Pivot for readable table
+        pivot_count = prod_stats.pivot(index='Product', columns='norm_app', values='Count').fillna(0).astype(int)
+        pivot_pct = prod_stats.pivot(index='Product', columns='norm_app', values='% of Brand').fillna(0).round(1)
+        
+        # Combine Count and % for display
+        display_df = pivot_count.copy().astype(str)
+        for col in display_df.columns:
+            display_df[col] = pivot_count[col].astype(str) + " (" + pivot_pct[col].astype(str) + "%)"
+            
+        display_df['Total Count'] = pivot_count.sum(axis=1)
+        display_df = display_df.sort_values('Total Count', ascending=False)
+        
+        st.dataframe(display_df.style.highlight_max(axis=0, color='lightgreen'))
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("### Overall Product Volume (Top 5 + Others)")
-            overall_counts = prod_df['Product_Grouped'].value_counts().reset_index()
-            overall_counts.columns = ['Product', 'Count']
-            fig_prod_over = px.bar(overall_counts, x='Product', y='Count', color='Product', text_auto=True)
-            st.plotly_chart(fig_prod_over, use_container_width=True)
-
-        with c2:
-            st.markdown("### MoM Product Trends")
-            if 'Month' in prod_df.columns:
-                mom_counts = prod_df.groupby(['Month', 'Product_Grouped']).size().reset_index(name='Count')
-                fig_prod_mom = px.line(mom_counts, x='Month', y='Count', color='Product_Grouped', markers=True)
-                st.plotly_chart(fig_prod_mom, use_container_width=True)
+        # Visual
+        st.markdown("### Product Mix by Brand")
+        fig_prod_bar = px.bar(prod_stats, x='norm_app', y='Count', color='Product', 
+                              text=prod_stats['% of Brand'].apply(lambda x: f"{x:.1f}%"),
+                              title="Product Composition per Brand")
+        st.plotly_chart(fig_prod_bar, use_container_width=True)
 
 # === TAB 3: TOP DRIVERS (Positive) ===
 with tab_drive:
     st.subheader("3. Top Drivers (Positive Themes from 4-5★)")
 
+    # 3. 45 Ratings Drivers Top 10 with base, count and % across brands
     df_pos = df[df['score'].isin([4, 5])]
-    base_counts = df_pos.groupby('norm_app').size()
-
+    
     if df_pos.empty or not net_cols:
         st.warning("No positive data or NET columns available.")
     else:
+        # Calculate Base
+        base_counts = df_pos.groupby('norm_app').size()
+        st.markdown(f"**Base (Total 4-5★ Reviews):** {base_counts.sum()}")
+        
         valid_net_cols = [c for c in net_cols if c in df_pos.columns]
-        net_sums = df_pos.groupby('norm_app')[valid_net_cols].sum().T
-        net_sums.index = net_sums.index.str.replace('[NET]', '', regex=False).str.strip()
-        net_pct = net_sums.div(base_counts, axis=1).fillna(0) * 100
-        net_pct['Average'] = net_pct.mean(axis=1)
-        top_drivers = net_pct.sort_values('Average', ascending=False).head(10).drop(columns=['Average'])
-
-        st.markdown("#### Top Drivers (% of Positive Reviews)")
-        st.dataframe(top_drivers.style.background_gradient(cmap='Greens', axis=None).format("{:.1f}%"))
-
-        top_drivers_melt = top_drivers.reset_index().melt(id_vars='index')
-        fig_drive = px.bar(top_drivers_melt, y='index', x='value', color='norm_app', barmode='group',
-                           orientation='h', labels={'value': '% of Base', 'index': 'Driver'},
-                           color_discrete_map=COLOR_MAP, height=600)
-        fig_drive.update_layout(yaxis=dict(autorange="reversed"))
-        st.plotly_chart(fig_drive, use_container_width=True)
+        
+        # Sum Drivers per Brand
+        driver_sums = df_pos.groupby('norm_app')[valid_net_cols].sum().T
+        driver_sums.index = driver_sums.index.str.replace('[NET]', '', regex=False).str.strip()
+        
+        # Calculate %
+        driver_pct = driver_sums.div(base_counts, axis=1).fillna(0) * 100
+        
+        # Filter Top 10 Drivers (by Overall Average)
+        driver_pct['Average'] = driver_pct.mean(axis=1)
+        top_10_drivers = driver_pct.sort_values('Average', ascending=False).head(10).drop(columns=['Average'])
+        
+        # Create detailed table with Count and %
+        st.markdown("#### Top 10 Drivers (% of 4-5★ Reviews)")
+        st.dataframe(top_10_drivers.style.background_gradient(cmap='Greens', axis=None).format("{:.1f}%"))
+        
+        # Heatmap Visualization
+        fig_drive_heat = px.imshow(top_10_drivers, text_auto='.1f', aspect="auto",
+                                   color_continuous_scale='Greens', title="Driver Intensity Heatmap")
+        st.plotly_chart(fig_drive_heat, use_container_width=True)
 
 # === TAB 4: TOP BARRIERS (Negative) ===
 with tab_barr:
     st.subheader("4. Top Barriers (Negative Themes from 1-3★)")
 
+    # 2. 123 Ratings Barriers Top 10 with base, count and % across brands
     df_neg = df[df['score'].isin([1, 2, 3])]
-    base_counts_neg = df_neg.groupby('norm_app').size()
-
+    
     if df_neg.empty or not net_cols:
         st.warning("No negative data or NET columns available.")
     else:
+        # Calculate Base
+        base_counts_neg = df_neg.groupby('norm_app').size()
+        st.markdown(f"**Base (Total 1-3★ Reviews):** {base_counts_neg.sum()}")
+        
         valid_net_cols = [c for c in net_cols if c in df_neg.columns]
-        net_sums_neg = df_neg.groupby('norm_app')[valid_net_cols].sum().T
-        net_sums_neg.index = net_sums_neg.index.str.replace('[NET]', '', regex=False).str.strip()
-        net_pct_neg = net_sums_neg.div(base_counts_neg, axis=1).fillna(0) * 100
-        net_pct_neg['Average'] = net_pct_neg.mean(axis=1)
-        top_barriers = net_pct_neg.sort_values('Average', ascending=False).head(10).drop(columns=['Average'])
+        
+        # Sum Barriers per Brand
+        barrier_sums = df_neg.groupby('norm_app')[valid_net_cols].sum().T
+        barrier_sums.index = barrier_sums.index.str.replace('[NET]', '', regex=False).str.strip()
+        
+        # Calculate %
+        barrier_pct = barrier_sums.div(base_counts_neg, axis=1).fillna(0) * 100
+        
+        # Filter Top 10 Barriers
+        barrier_pct['Average'] = barrier_pct.mean(axis=1)
+        top_10_barriers = barrier_pct.sort_values('Average', ascending=False).head(10).drop(columns=['Average'])
+        
+        # Detailed Table
+        st.markdown("#### Top 10 Barriers (% of 1-3★ Reviews)")
+        st.dataframe(top_10_barriers.style.background_gradient(cmap='Reds', axis=None).format("{:.1f}%"))
+        
+        # Heatmap Visualization
+        fig_barr_heat = px.imshow(top_10_barriers, text_auto='.1f', aspect="auto",
+                                  color_continuous_scale='Reds', title="Barrier Intensity Heatmap")
+        st.plotly_chart(fig_barr_heat, use_container_width=True)
 
-        st.markdown("#### Top Barriers (% of Negative Reviews)")
-        st.dataframe(top_barriers.style.background_gradient(cmap='Reds', axis=None).format("{:.1f}%"))
-
-        top_barr_melt = top_barriers.reset_index().melt(id_vars='index')
-        fig_barr = px.bar(top_barr_melt, y='index', x='value', color='norm_app', barmode='group',
-                          orientation='h', labels={'value': '% of Base', 'index': 'Barrier'},
-                          color_discrete_map=COLOR_MAP, height=600)
-        fig_barr.update_layout(yaxis=dict(autorange="reversed"))
-        st.plotly_chart(fig_barr, use_container_width=True)
-
-# === TAB 5: REVIEW QUALITY ===
+# === TAB 5: QUALITY & SENTIMENT ===
 with tab_qual:
-    st.subheader("5. Review Quality (Character Count)")
+    st.subheader("5. Review Quality & Deep Dive")
     
     c1, c2 = st.columns(2)
+    
+    # 4. Overall and 12345 wise sentiment
     with c1:
-        st.markdown("### Overall Split")
-        len_counts = df['length_group'].value_counts().reset_index()
-        len_counts.columns = ['Length Group', 'Count']
-        fig_len_pie = px.pie(len_counts, names='Length Group', values='Count', color='Length Group',
-                             color_discrete_map={'<=29 Chars': '#ff7f0e', '>=30 Chars': '#1f77b4'})
-        st.plotly_chart(fig_len_pie, use_container_width=True)
-
+        st.markdown("### Sentiment by Rating")
+        if 'sentiment' in df.columns:
+            sent_rating = pd.crosstab(df['score'], df['sentiment'], normalize='index') * 100
+            fig_sent_stack = px.bar(sent_rating, x=sent_rating.index, y=sent_rating.columns,
+                                    title="Sentiment Distribution per Rating Level",
+                                    color_discrete_map={'Positive': '#2ca02c', 'Negative': '#d62728', 'Neutral': '#ff7f0e'})
+            st.plotly_chart(fig_sent_stack, use_container_width=True)
+            
+    # 5. 12345 wise <=29 Characters vs >=30 Characters
     with c2:
-        st.markdown("### Split by Brand")
-        len_brand = df.groupby(['norm_app', 'length_group']).size().reset_index(name='Count')
-        len_brand['Total'] = len_brand.groupby('norm_app')['Count'].transform('sum')
-        len_brand['Pct'] = (len_brand['Count'] / len_brand['Total']) * 100
-        fig_len_bar = px.bar(len_brand, x='norm_app', y='Pct', color='length_group',
-                             title="Review Length Distribution by Brand",
-                             color_discrete_map={'<=29 Chars': '#ff7f0e', '>=30 Chars': '#1f77b4'})
-        st.plotly_chart(fig_len_bar, use_container_width=True)
+        st.markdown("### Review Length by Rating")
+        len_rating = pd.crosstab(df['score'], df['length_group'], normalize='index') * 100
+        fig_len_stack = px.bar(len_rating, x=len_rating.index, y=len_rating.columns,
+                               title="Short vs Long Reviews per Rating Level",
+                               color_discrete_map={'<=29 Chars': '#ff7f0e', '>=30 Chars': '#1f77b4'})
+        st.plotly_chart(fig_len_stack, use_container_width=True)
+        
+    st.markdown("---")
+    
+    # 8. Average review length Overall and Across brands
+    st.markdown("### Average Review Length (Characters)")
+    avg_len_overall = df['char_count'].mean()
+    avg_len_brand = df.groupby('norm_app')['char_count'].mean().reset_index().sort_values('char_count')
+    
+    col_a, col_b = st.columns([1, 3])
+    col_a.metric("Overall Avg Length", f"{avg_len_overall:.0f} chars")
+    
+    fig_avg_len = px.bar(avg_len_brand, x='char_count', y='norm_app', orientation='h',
+                         text_auto='.0f', title="Avg Character Count by Brand",
+                         color='norm_app', color_discrete_map=COLOR_MAP)
+    col_b.plotly_chart(fig_avg_len, use_container_width=True)
 
-    with st.expander("View Sample Short Reviews (<=29 chars)"):
-        st.dataframe(df[df['length_group'] == '<=29 Chars'][['at', 'norm_app', 'score', 'content']].head(100))
+# === TAB 6: AI & STRATEGIC INSIGHTS ===
+with tab_insights:
+    st.subheader("🧠 Sharp AI Strategic Insights")
+    st.markdown("Algorithmic extraction of key performance indicators from the dataset.")
+
+    # 9. Any Sharp AI Insights from the existing data for brand direction
+    
+    # --- INSIGHT 1: The "Achilles Heel" (Biggest Barrier per Brand) ---
+    st.markdown("#### 1. The 'Achilles Heel' (Top Complaint per Brand)")
+    if not df_neg.empty and not net_cols:
+        # Re-calculate barrier sums dynamically
+        valid_net_cols = [c for c in net_cols if c in df_neg.columns]
+        barrier_sums = df_neg.groupby('norm_app')[valid_net_cols].sum()
+        
+        # Find max column for each row
+        max_barrier = barrier_sums.idxmax(axis=1)
+        max_val = barrier_sums.max(axis=1)
+        base = df_neg.groupby('norm_app').size()
+        pct = (max_val / base * 100).round(1)
+        
+        insight_df = pd.DataFrame({
+            'Top Barrier': max_barrier.str.replace('[NET]', '', regex=False),
+            '% of Negative Reviews': pct
+        }).sort_values('% of Negative Reviews', ascending=False)
+        
+        st.dataframe(insight_df.style.highlight_max(axis=0, color='pink'))
+    
+    # --- INSIGHT 2: The "Superpower" (Top Driver per Brand) ---
+    st.markdown("#### 2. The 'Superpower' (Top Praise per Brand)")
+    if not df_pos.empty and not net_cols:
+        valid_net_cols = [c for c in net_cols if c in df_pos.columns]
+        driver_sums = df_pos.groupby('norm_app')[valid_net_cols].sum()
+        
+        max_driver = driver_sums.idxmax(axis=1)
+        max_val_d = driver_sums.max(axis=1)
+        base_d = df_pos.groupby('norm_app').size()
+        pct_d = (max_val_d / base_d * 100).round(1)
+        
+        insight_df_d = pd.DataFrame({
+            'Top Driver': max_driver.str.replace('[NET]', '', regex=False),
+            '% of Positive Reviews': pct_d
+        }).sort_values('% of Positive Reviews', ascending=False)
+        
+        st.dataframe(insight_df_d.style.highlight_max(axis=0, color='lightgreen'))
+
+    # --- INSIGHT 3: Engagement Quality ---
+    st.markdown("#### 3. Engagement Quality (Detailed Feedback)")
+    # Who has the most "Long" reviews?
+    long_reviews = df[df['length_group'] == '>=30 Chars']
+    if not long_reviews.empty:
+        long_pct = (long_reviews.groupby('norm_app').size() / df.groupby('norm_app').size() * 100).sort_values(ascending=False)
+        top_eng_brand = long_pct.idxmax()
+        st.info(f"💡 **{top_eng_brand}** has the most detailed feedback, with **{long_pct.max():.1f}%** of reviews exceeding 30 characters. This indicates a highly engaged user base willing to give specific feedback.")
