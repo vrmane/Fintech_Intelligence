@@ -5,16 +5,33 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 from streamlit_lottie import st_lottie
+import time
 
 # ==========================================
-# 1. PAGE CONFIGURATION
+# 1. PAGE CONFIGURATION & STYLING
 # ==========================================
 st.set_page_config(
     page_title="Fintech Strategic Dashboard",
-    page_icon="📊",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# --- CSS TO HIDE DEFAULT "RUNNING" STATUS ---
+st.markdown("""
+    <style>
+        /* Hide the top-right 'Running' man/status */
+        .stStatusWidget {
+            visibility: hidden;
+        }
+        /* Custom Loader Container Styling */
+        .loader-text {
+            text-align: center;
+            font-family: 'Helvetica', sans-serif;
+            color: #555;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 # --- HELPER: LOAD LOTTIE ANIMATION ---
 def load_lottieurl(url: str):
@@ -41,7 +58,7 @@ COLOR_MAP = {
 # ==========================================
 # 2. SUPABASE CONNECTION & DATA LOADING
 # ==========================================
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def init_connection():
     try:
         url = st.secrets["supabase"]["url"]
@@ -53,9 +70,10 @@ def init_connection():
 
 supabase = init_connection()
 
-@st.cache_data(ttl=600)
+# --- THE CRITICAL CHANGE: show_spinner=False ---
+# This disables the "Running load_data()..." text
+@st.cache_data(ttl=600, show_spinner=False)
 def load_data():
-    # --- A. FETCH ALL DATA (Pagination Loop) ---
     all_rows = []
     start = 0
     batch_size = 1000  
@@ -63,67 +81,44 @@ def load_data():
     while True:
         response = supabase.table("reviews").select("*").range(start, start + batch_size - 1).execute()
         rows = response.data
-        
-        if not rows:
-            break
-            
+        if not rows: break
         all_rows.extend(rows)
-        
-        if len(rows) < batch_size:
-            break
-            
+        if len(rows) < batch_size: break
         start += batch_size
 
-    if not all_rows:
-        return pd.DataFrame(), []
+    if not all_rows: return pd.DataFrame(), []
 
-    # --- B. CREATE DATAFRAME ---
+    # --- DATA PROCESSING ---
     df = pd.DataFrame(all_rows)
-
-    # --- C. RENAME COLUMNS ---
+    
     rename_map = {
-        'App_Name': 'app_name', 
-        'Rating': 'score',
-        'Review_Date': 'at', 
-        'Review_Text': 'content',
-        'Product_1': 'product_1', 
-        'Product_2': 'product_2',
-        'Product_3': 'product_3', 
-        'Product_4': 'product_4',
+        'App_Name': 'app_name', 'Rating': 'score',
+        'Review_Date': 'at', 'Review_Text': 'content',
+        'Product_1': 'product_1', 'Product_2': 'product_2',
+        'Product_3': 'product_3', 'Product_4': 'product_4',
         'Sentiment': 'sentiment'
     }
     df.rename(columns=rename_map, inplace=True)
-
-    # --- D. DATA PROCESSING & CLEANING ---
     
-    # 1. Normalize App Names
     if 'app_name' in df.columns:
         df['norm_app'] = df['app_name'].str.lower().apply(
             lambda x: next((v for k, v in APP_MAP.items() if k in str(x)), None)
         )
         df = df.dropna(subset=['norm_app'])
-    else:
-        st.error("Column 'App_Name' missing from Supabase data.")
-        st.stop()
-
-    # 2. Date Parsing (FIXED FOR IST)
+    
     if 'at' in df.columns:
         df['at'] = pd.to_datetime(df['at'], errors='coerce', utc=True)
-        df['at'] = df['at'].dt.tz_convert('Asia/Kolkata')
-        df['at'] = df['at'].dt.tz_localize(None) 
+        df['at'] = df['at'].dt.tz_convert('Asia/Kolkata').dt.tz_localize(None) 
         df = df.dropna(subset=['at'])
         df['Month'] = df['at'].dt.strftime('%Y-%m')
 
-    # 3. Numeric Score
     if 'score' in df.columns:
         df['score'] = pd.to_numeric(df['score'], errors='coerce')
 
-    # 4. Character Count Analysis Helper
     if 'content' in df.columns:
         df['char_count'] = df['content'].astype(str).str.len().fillna(0)
         df['length_group'] = df['char_count'].apply(lambda x: '<=29 Chars' if x <= 29 else '>=30 Chars')
 
-    # 5. Handle [NET] Columns
     net_cols = [c for c in df.columns if str(c).startswith('[NET]')]
     for col in net_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -131,64 +126,70 @@ def load_data():
     return df, net_cols
 
 # ==========================================
-# 3. INITIAL LOADING ANIMATION (MOTION GRAPHICS)
+# 3. ENGAGING LOADING SCREEN
 # ==========================================
 
-# Placeholder for the loader
-loader_placeholder = st.empty()
-
-# Check if data is already in session state (optional, for even faster reloads)
+# Check if data is already loaded in Session State to skip animation on small interactions
 if 'df' not in st.session_state:
     
-    # -- SHOW LOADER --
-    with loader_placeholder.container():
-        # URL for a "Data Dashboard Analysis" Lottie Animation
-        # You can swap this URL with any JSON from lottiefiles.com
+    # Create a blank container for the loader
+    loader_container = st.empty()
+    
+    with loader_container.container():
+        # --- LOTTIE ANIMATION ---
+        # "Data Analysis" Animation URL
         lottie_url = "https://lottie.host/67705423-745b-4303-9d8a-662551406e22/94bZp6i0k8.json"
         lottie_json = load_lottieurl(lottie_url)
         
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
+        # Center the animation using columns
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c2:
             if lottie_json:
-                st_lottie(lottie_json, height=300, key="loader_anim")
-            else:
-                st.spinner("Connecting to Supabase...") # Fallback
+                st_lottie(lottie_json, height=300, key="loading_anim")
             
+            # --- ENGAGING TEXT ---
             st.markdown(
                 """
-                <h3 style='text-align: center; color: #666;'>
-                🚀 Connecting to Supabase & Analyzing 45,000+ Reviews...
-                </h3>
+                <div class='loader-text'>
+                    <h3>🚀 Launching Fintech Intelligence...</h3>
+                    <p><i>Fetching 45,000+ customer voices from the cloud.</i></p>
+                    <hr style="width:50%; margin: auto;">
+                    <p style="font-size: 14px; color: #888; margin-top: 10px;">
+                    <b>Did you know?</b> Analyzing sentiment patterns can predict churn 
+                    months before it happens. Hang tight!
+                    </p>
+                </div>
                 """, 
                 unsafe_allow_html=True
             )
 
-    # -- FETCH DATA --
+    # --- ACTUAL DATA LOAD ---
+    # This runs while the user looks at the animation
     df_raw, net_cols = load_data()
     
-    # Save to session state to avoid reloading on minor interactions if needed
+    # Save to session state
     st.session_state['df'] = df_raw
     st.session_state['net_cols'] = net_cols
-
-    # -- CLEAR LOADER --
-    loader_placeholder.empty()
+    
+    # Clear the loader immediately after data is ready
+    loader_container.empty()
 
 else:
-    # Retrieve from session state
+    # Retrieve from cache instantly
     df_raw = st.session_state['df']
     net_cols = st.session_state['net_cols']
 
 
 if df_raw.empty:
-    st.warning("No data found in Supabase.")
+    st.warning("⚠️ No data found in Supabase. Please check your database connection.")
     st.stop()
 
+
 # ==========================================
-# 4. SIDEBAR FILTERS
+# 4. SIDEBAR & FILTERS
 # ==========================================
 st.sidebar.title("🎛️ Slice & Dice")
 
-# A. Date Filter
 if not df_raw.empty:
     min_date = df_raw['at'].min().date()
     max_date = df_raw['at'].max().date()
@@ -196,11 +197,9 @@ if not df_raw.empty:
 else:
     date_range = [pd.Timestamp.now().date(), pd.Timestamp.now().date()]
 
-# B. App Filter
 all_apps = sorted(df_raw['norm_app'].unique())
 sel_apps = st.sidebar.multiselect("📱 Apps", all_apps, default=all_apps)
 
-# C. Product Filter
 prod_set = set()
 for c in ['product_1', 'product_2', 'product_3', 'product_4']:
     if c in df_raw.columns:
@@ -208,13 +207,10 @@ for c in ['product_1', 'product_2', 'product_3', 'product_4']:
 all_products = sorted([str(p) for p in prod_set if p and str(p).lower() != 'nan'])
 sel_products = st.sidebar.multiselect("🏷️ Products", all_products)
 
-# D. Rating Filter
 sel_ratings = st.sidebar.multiselect("⭐ Ratings", [1, 2, 3, 4, 5], default=[1, 2, 3, 4, 5])
-
-# E. Search
 search_query = st.sidebar.text_input("🔍 Search Reviews", "")
 
-# --- APPLY FILTERS ---
+# Apply Filters
 if len(date_range) == 2:
     start_date, end_date = date_range
     mask = (
@@ -256,7 +252,7 @@ tab_overview, tab_prod, tab_drive, tab_barr, tab_qual, tab_insights, tab_monthly
     "📅 Monthly Trends"
 ])
 
-# === TAB 1: OVERVIEW & RATINGS ===
+# === TAB 1: OVERVIEW ===
 with tab_overview:
     st.subheader("1. Ratings Distribution & Review Ratios")
     c1, c2 = st.columns(2)
@@ -311,7 +307,7 @@ with tab_prod:
                               title="Product Composition per Brand")
         st.plotly_chart(fig_prod_bar, use_container_width=True)
 
-# === TAB 3: TOP DRIVERS (Positive) ===
+# === TAB 3: TOP DRIVERS ===
 with tab_drive:
     st.subheader("3. Top Drivers (Positive Themes from 4-5★)")
     df_pos = df[df['score'].isin([4, 5])]
@@ -336,7 +332,7 @@ with tab_drive:
                                    color_continuous_scale='Greens', title="Driver Intensity Heatmap")
         st.plotly_chart(fig_drive_heat, use_container_width=True)
 
-# === TAB 4: TOP BARRIERS (Negative) ===
+# === TAB 4: TOP BARRIERS ===
 with tab_barr:
     st.subheader("4. Top Barriers (Negative Themes from 1-3★)")
     df_neg = df[df['score'].isin([1, 2, 3])]
@@ -361,7 +357,7 @@ with tab_barr:
                                   color_continuous_scale='Reds', title="Barrier Intensity Heatmap")
         st.plotly_chart(fig_barr_heat, use_container_width=True)
 
-# === TAB 5: QUALITY & SENTIMENT ===
+# === TAB 5: QUALITY ===
 with tab_qual:
     st.subheader("5. Review Quality & Deep Dive")
     c1, c2 = st.columns(2)
@@ -391,7 +387,7 @@ with tab_qual:
                          color='norm_app', color_discrete_map=COLOR_MAP)
     col_b.plotly_chart(fig_avg_len, use_container_width=True)
 
-# === TAB 6: AI & STRATEGIC INSIGHTS ===
+# === TAB 6: INSIGHTS ===
 with tab_insights:
     st.subheader("🧠 Sharp AI Strategic Insights")
     st.markdown("Automated strategic profiling per brand based on current data patterns.")
@@ -460,7 +456,7 @@ with tab_monthly:
     else:
         df_trend = df.sort_values('at')
         c1, c2 = st.columns(2)
-
+        
         with c1:
             st.markdown("### Monthly Review Volume")
             trend_vol = df_trend.groupby(['Month', 'norm_app']).size().reset_index(name='Count')
