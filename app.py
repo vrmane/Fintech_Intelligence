@@ -3,6 +3,8 @@ import pandas as pd
 from supabase import create_client, Client
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
+from streamlit_lottie import st_lottie
 
 # ==========================================
 # 1. PAGE CONFIGURATION
@@ -13,6 +15,16 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# --- HELPER: LOAD LOTTIE ANIMATION ---
+def load_lottieurl(url: str):
+    try:
+        r = requests.get(url)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except:
+        return None
 
 # --- CONFIGURATION (APP MAPPING) ---
 APP_MAP = {
@@ -118,16 +130,61 @@ def load_data():
 
     return df, net_cols
 
-# Load Data
-with st.spinner('🚀 Connecting to Supabase and fetching reviews...'):
+# ==========================================
+# 3. INITIAL LOADING ANIMATION (MOTION GRAPHICS)
+# ==========================================
+
+# Placeholder for the loader
+loader_placeholder = st.empty()
+
+# Check if data is already in session state (optional, for even faster reloads)
+if 'df' not in st.session_state:
+    
+    # -- SHOW LOADER --
+    with loader_placeholder.container():
+        # URL for a "Data Dashboard Analysis" Lottie Animation
+        # You can swap this URL with any JSON from lottiefiles.com
+        lottie_url = "https://lottie.host/67705423-745b-4303-9d8a-662551406e22/94bZp6i0k8.json"
+        lottie_json = load_lottieurl(lottie_url)
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if lottie_json:
+                st_lottie(lottie_json, height=300, key="loader_anim")
+            else:
+                st.spinner("Connecting to Supabase...") # Fallback
+            
+            st.markdown(
+                """
+                <h3 style='text-align: center; color: #666;'>
+                🚀 Connecting to Supabase & Analyzing 45,000+ Reviews...
+                </h3>
+                """, 
+                unsafe_allow_html=True
+            )
+
+    # -- FETCH DATA --
     df_raw, net_cols = load_data()
+    
+    # Save to session state to avoid reloading on minor interactions if needed
+    st.session_state['df'] = df_raw
+    st.session_state['net_cols'] = net_cols
+
+    # -- CLEAR LOADER --
+    loader_placeholder.empty()
+
+else:
+    # Retrieve from session state
+    df_raw = st.session_state['df']
+    net_cols = st.session_state['net_cols']
+
 
 if df_raw.empty:
     st.warning("No data found in Supabase.")
     st.stop()
 
 # ==========================================
-# 3. SIDEBAR FILTERS
+# 4. SIDEBAR FILTERS
 # ==========================================
 st.sidebar.title("🎛️ Slice & Dice")
 
@@ -182,14 +239,13 @@ if search_query:
 df = df_raw[mask].copy()
 
 # ==========================================
-# 4. MAIN DASHBOARD
+# 5. MAIN DASHBOARD UI
 # ==========================================
 st.title("🚀 Fintech Strategic Analysis Dashboard")
 if len(date_range) == 2:
     st.markdown(f"**Data Period:** {date_range[0]} to {date_range[1]} | **Reviews:** {len(df):,}")
 
 # TABS
-# ADDED TAB 7: Monthly Trends
 tab_overview, tab_prod, tab_drive, tab_barr, tab_qual, tab_insights, tab_monthly = st.tabs([
     "📊 Overview & Ratings",
     "📦 Products",
@@ -394,20 +450,17 @@ with tab_insights:
                 * **User Voice:** Users tend to leave **{len_diff}** feedback (Avg {b_len:.0f} chars), suggesting { 'high engagement/frustration' if b_len > cat_avg_len else 'transactional usage' }.
                 """)
 
-# === TAB 7: MONTHLY TRENDS (NEW) ===
+# === TAB 7: MONTHLY TRENDS ===
 with tab_monthly:
     st.subheader("7. Monthly Brand Comparison Trends")
     st.info("Month-over-month performance comparison (Volume, Ratings & Drivers).")
 
     if 'Month' not in df.columns:
-        st.error("Month column is missing. Ensure 'Review_Date' is parsed correctly.")
+        st.error("Month column is missing.")
     else:
-        # Sort dataframe by date to ensure line charts flow correctly
         df_trend = df.sort_values('at')
-        
         c1, c2 = st.columns(2)
 
-        # 1. Volume Trend (Line Chart)
         with c1:
             st.markdown("### Monthly Review Volume")
             trend_vol = df_trend.groupby(['Month', 'norm_app']).size().reset_index(name='Count')
@@ -415,7 +468,6 @@ with tab_monthly:
                               title="Monthly Volume by Brand", color_discrete_map=COLOR_MAP)
             st.plotly_chart(fig_vol, use_container_width=True)
 
-        # 2. Rating Trend (Line Chart)
         with c2:
             st.markdown("### Monthly Average Rating")
             trend_score = df_trend.groupby(['Month', 'norm_app'])['score'].mean().reset_index()
@@ -425,37 +477,9 @@ with tab_monthly:
             st.plotly_chart(fig_score, use_container_width=True)
 
         st.markdown("---")
-
-        # 3. Monthly Heatmap (Brand x Month x Rating)
         st.markdown("### 🌡️ Heatmap: Rating Performance over Time")
-        
-        # 
-        # Pivot: Rows=Brand, Cols=Month, Val=Avg Rating
         pivot_rating = trend_score.pivot(index='norm_app', columns='Month', values='score')
-        
-        # Sort Columns (Months)
         pivot_rating = pivot_rating[sorted(pivot_rating.columns)]
-        
         fig_heat = px.imshow(pivot_rating, text_auto='.2f', aspect="auto",
                              color_continuous_scale='RdBu', title="Monthly Average Rating (Red=Low, Blue=High)")
         st.plotly_chart(fig_heat, use_container_width=True)
-
-        # 4. Driver Evolution (Optional - Top Positive Driver Trend)
-        st.markdown("### 📈 Top Driver Evolution")
-        # Identify the single top driver overall
-        if net_cols:
-            top_driver_overall = df[df['score'].isin([4,5])][net_cols].sum().idxmax()
-            clean_driver_name = top_driver_overall.replace('[NET]', '').strip()
-            
-            st.markdown(f"**Trend for Top Category Driver:** *{clean_driver_name}*")
-            
-            # Group by Month/Brand for this specific driver
-            driver_trend = df[df['score'].isin([4,5])].groupby(['Month', 'norm_app'])[top_driver_overall].sum().reset_index(name='Count')
-            # Normalize by volume
-            base_trend = df[df['score'].isin([4,5])].groupby(['Month', 'norm_app']).size().reset_index(name='Base')
-            merged_driver = pd.merge(driver_trend, base_trend, on=['Month', 'norm_app'])
-            merged_driver['% Mention'] = (merged_driver['Count'] / merged_driver['Base']) * 100
-            
-            fig_driver = px.line(merged_driver, x='Month', y='% Mention', color='norm_app', markers=True,
-                                 title=f"Mention % of '{clean_driver_name}' (Positive Reviews)", color_discrete_map=COLOR_MAP)
-            st.plotly_chart(fig_driver, use_container_width=True)
