@@ -636,6 +636,11 @@ with tabs[5]:
     # Sentiment bucket breakdown
     st.subheader("🎭 Sentiment Distribution")
     sent_dist = df.groupby(['norm_app', 'sentiment_bucket']).size().reset_index(name='Count')
+    
+    # Convert categorical to string to avoid plotly errors
+    sent_dist['sentiment_bucket'] = sent_dist['sentiment_bucket'].astype(str)
+    sent_dist['norm_app'] = sent_dist['norm_app'].astype(str)
+    
     fig = px.sunburst(
         sent_dist,
         path=['norm_app', 'sentiment_bucket'],
