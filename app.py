@@ -189,13 +189,15 @@ if len(date_range) == 2:
     st.markdown(f"**Data Period:** {date_range[0]} to {date_range[1]} | **Reviews:** {len(df):,}")
 
 # TABS
-tab_overview, tab_prod, tab_drive, tab_barr, tab_qual, tab_insights = st.tabs([
+# ADDED TAB 7: Monthly Trends
+tab_overview, tab_prod, tab_drive, tab_barr, tab_qual, tab_insights, tab_monthly = st.tabs([
     "📊 Overview & Ratings",
     "📦 Products",
     "🚀 Drivers (4-5★)",
     "🛑 Barriers (1-3★)",
     "📏 Quality & Sentiment",
-    "🧠 AI & Strategic Insights"
+    "🧠 AI & Strategic Insights",
+    "📅 Monthly Trends"
 ])
 
 # === TAB 1: OVERVIEW & RATINGS ===
@@ -333,15 +335,12 @@ with tab_qual:
                          color='norm_app', color_discrete_map=COLOR_MAP)
     col_b.plotly_chart(fig_avg_len, use_container_width=True)
 
-# === TAB 6: AI & STRATEGIC INSIGHTS (NEW LOGIC) ===
+# === TAB 6: AI & STRATEGIC INSIGHTS ===
 with tab_insights:
     st.subheader("🧠 Sharp AI Strategic Insights")
     st.markdown("Automated strategic profiling per brand based on current data patterns.")
 
-    # Loop through each selected brand to generate dynamic insights
     selected_brands = df['norm_app'].unique()
-    
-    # Pre-calculate category averages for benchmarking
     cat_avg_rating = df['score'].mean()
     cat_avg_len = df['char_count'].mean()
 
@@ -349,13 +348,10 @@ with tab_insights:
         with st.expander(f"📌 Strategic Insights for: {brand}", expanded=True):
             b_df = df[df['norm_app'] == brand]
             
-            # --- CALCULATIONS ---
-            # 1. Rating Health
             b_rating = b_df['score'].mean()
             rating_diff = ((b_rating - cat_avg_rating) / cat_avg_rating) * 100
             rating_status = "Outperforming" if rating_diff > 0 else "Underperforming"
             
-            # 2. Top Driver (Positive)
             b_pos = b_df[b_df['score'].isin([4,5])]
             if not b_pos.empty and net_cols:
                 valid_drivers = [c for c in net_cols if c in b_pos.columns]
@@ -366,7 +362,6 @@ with tab_insights:
                 top_driver_name = "N/A"
                 top_driver_pct = 0
                 
-            # 3. Top Barrier (Negative)
             b_neg = b_df[b_df['score'].isin([1,2,3])]
             if not b_neg.empty and net_cols:
                 valid_barriers = [c for c in net_cols if c in b_neg.columns]
@@ -377,7 +372,6 @@ with tab_insights:
                 top_barrier_name = "N/A"
                 top_barrier_pct = 0
             
-            # 4. Product Focus
             if 'product_1' in b_df.columns:
                 top_prod = b_df['product_1'].mode()[0] if not b_df['product_1'].empty else "N/A"
                 prod_share = (len(b_df[b_df['product_1'] == top_prod]) / len(b_df) * 100)
@@ -385,16 +379,12 @@ with tab_insights:
                 top_prod = "N/A"
                 prod_share = 0
 
-            # 5. Engagement (Length)
             b_len = b_df['char_count'].mean()
             len_diff = "Detailed" if b_len > cat_avg_len else "Brief"
 
-            # --- DISPLAY INSIGHTS ---
             col_i1, col_i2 = st.columns([1, 4])
-            
             with col_i1:
                 st.metric("Avg Score", f"{b_rating:.2f}", delta=f"{rating_diff:.1f}% vs Cat. Avg")
-            
             with col_i2:
                 st.markdown(f"""
                 * **Competitive Position:** Currently **{rating_status}** the category average ({cat_avg_rating:.2f}).
@@ -403,3 +393,69 @@ with tab_insights:
                 * **Product Anchor:** Heavily reliant on **{top_prod}**, which accounts for **{prod_share:.1f}%** of total volume.
                 * **User Voice:** Users tend to leave **{len_diff}** feedback (Avg {b_len:.0f} chars), suggesting { 'high engagement/frustration' if b_len > cat_avg_len else 'transactional usage' }.
                 """)
+
+# === TAB 7: MONTHLY TRENDS (NEW) ===
+with tab_monthly:
+    st.subheader("7. Monthly Brand Comparison Trends")
+    st.info("Month-over-month performance comparison (Volume, Ratings & Drivers).")
+
+    if 'Month' not in df.columns:
+        st.error("Month column is missing. Ensure 'Review_Date' is parsed correctly.")
+    else:
+        # Sort dataframe by date to ensure line charts flow correctly
+        df_trend = df.sort_values('at')
+        
+        c1, c2 = st.columns(2)
+
+        # 1. Volume Trend (Line Chart)
+        with c1:
+            st.markdown("### Monthly Review Volume")
+            trend_vol = df_trend.groupby(['Month', 'norm_app']).size().reset_index(name='Count')
+            fig_vol = px.line(trend_vol, x='Month', y='Count', color='norm_app', markers=True, 
+                              title="Monthly Volume by Brand", color_discrete_map=COLOR_MAP)
+            st.plotly_chart(fig_vol, use_container_width=True)
+
+        # 2. Rating Trend (Line Chart)
+        with c2:
+            st.markdown("### Monthly Average Rating")
+            trend_score = df_trend.groupby(['Month', 'norm_app'])['score'].mean().reset_index()
+            fig_score = px.line(trend_score, x='Month', y='score', color='norm_app', markers=True, 
+                                title="Monthly Avg Rating by Brand", color_discrete_map=COLOR_MAP)
+            fig_score.update_yaxes(range=[1, 5])
+            st.plotly_chart(fig_score, use_container_width=True)
+
+        st.markdown("---")
+
+        # 3. Monthly Heatmap (Brand x Month x Rating)
+        st.markdown("### 🌡️ Heatmap: Rating Performance over Time")
+        
+        # 
+        # Pivot: Rows=Brand, Cols=Month, Val=Avg Rating
+        pivot_rating = trend_score.pivot(index='norm_app', columns='Month', values='score')
+        
+        # Sort Columns (Months)
+        pivot_rating = pivot_rating[sorted(pivot_rating.columns)]
+        
+        fig_heat = px.imshow(pivot_rating, text_auto='.2f', aspect="auto",
+                             color_continuous_scale='RdBu', title="Monthly Average Rating (Red=Low, Blue=High)")
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+        # 4. Driver Evolution (Optional - Top Positive Driver Trend)
+        st.markdown("### 📈 Top Driver Evolution")
+        # Identify the single top driver overall
+        if net_cols:
+            top_driver_overall = df[df['score'].isin([4,5])][net_cols].sum().idxmax()
+            clean_driver_name = top_driver_overall.replace('[NET]', '').strip()
+            
+            st.markdown(f"**Trend for Top Category Driver:** *{clean_driver_name}*")
+            
+            # Group by Month/Brand for this specific driver
+            driver_trend = df[df['score'].isin([4,5])].groupby(['Month', 'norm_app'])[top_driver_overall].sum().reset_index(name='Count')
+            # Normalize by volume
+            base_trend = df[df['score'].isin([4,5])].groupby(['Month', 'norm_app']).size().reset_index(name='Base')
+            merged_driver = pd.merge(driver_trend, base_trend, on=['Month', 'norm_app'])
+            merged_driver['% Mention'] = (merged_driver['Count'] / merged_driver['Base']) * 100
+            
+            fig_driver = px.line(merged_driver, x='Month', y='% Mention', color='norm_app', markers=True,
+                                 title=f"Mention % of '{clean_driver_name}' (Positive Reviews)", color_discrete_map=COLOR_MAP)
+            st.plotly_chart(fig_driver, use_container_width=True)
