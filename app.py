@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import numpy as np
 from supabase import create_client, Client
 
@@ -12,21 +13,43 @@ st.set_page_config(
     page_title="Strategic Intelligence Platform",
     page_icon="🦅",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # --- CEO-GRADE CSS ---
 st.markdown("""
     <style>
-        .stApp { background-color: #0b0f19; color: #e2e8f0; }
+        /* APP BACKGROUND */
+        .stApp {
+            background-color: #0b0f19; /* Obsidian Black */
+            color: #e2e8f0;
+        }
         
-        /* METRIC CARDS */
+        /* CARD DESIGN */
         div[data-testid="metric-container"] {
             background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
             border: 1px solid #334155;
             border-radius: 12px;
             padding: 20px;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+            transition: transform 0.2s;
+        }
+        div[data-testid="metric-container"]:hover {
+            border-color: #38bdf8;
+            transform: translateY(-2px);
+        }
+        
+        /* TEXT HIERARCHY */
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        h2, h3 {
+            color: #f1f5f9;
+            font-weight: 600;
         }
         
         /* AI INSIGHT BOX */
@@ -40,13 +63,18 @@ st.markdown("""
         }
         .ai-header { font-weight: bold; color: #10b981; font-size: 1.1em; margin-bottom: 5px; }
         .ai-text { color: #d1fae5; font-size: 1em; line-height: 1.5; }
-
-        /* TABS */
-        .stTabs [data-baseweb="tab-list"] { gap: 20px; }
+        
+        /* TAB STYLING */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 20px;
+        }
         .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            white-space: pre-wrap;
             background-color: rgba(255, 255, 255, 0.02);
             border-radius: 8px;
             color: #94a3b8;
+            font-weight: 600;
         }
         .stTabs [aria-selected="true"] {
             background-color: rgba(56, 189, 248, 0.1);
@@ -71,11 +99,13 @@ def init_connection():
 
 supabase = init_connection()
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600)  # Refresh cache every 10 mins
 def load_data():
     all_rows = []
-    start, batch_size = 0, 1000
+    start = 0
+    batch_size = 1000
     
+    # Pagination Loop
     while True:
         response = supabase.table("reviews").select("*").range(start, start + batch_size - 1).execute()
         rows = response.data
@@ -88,14 +118,17 @@ def load_data():
 
     df = pd.DataFrame(all_rows)
 
-    # --- CLEANING ---
+    # --- ROBUST DATA CLEANING ---
     if 'Review_Date' in df.columns:
         df['at'] = pd.to_datetime(df['Review_Date'], errors='coerce')
+        # Fallback format
         mask = df['at'].isna()
         if mask.any():
             df.loc[mask, 'at'] = pd.to_datetime(df.loc[mask, 'Review_Date'], format='%d-%m-%Y', errors='coerce')
+        
         df = df.dropna(subset=['at'])
         df['Month'] = df['at'].dt.strftime('%Y-%m')
+        # Weekly Period (Start of Week)
         df['Week'] = df['at'].dt.to_period('W').apply(lambda r: r.start_time)
 
     if 'Rating' in df.columns:
@@ -103,15 +136,15 @@ def load_data():
     
     if 'Review_Text' in df.columns:
         df['char_count'] = df['Review_Text'].astype(str).str.len().fillna(0)
-        # Create Cut Points for Filtering
+        # 2. Add Character Filter Logic
         df['length_bucket'] = df['char_count'].apply(lambda x: 'Brief (<=29)' if x <= 29 else 'Detailed (>=30)')
 
-    # THEME EXTRACTION (Drivers/Barriers)
+    # THEME EXTRACTION
     net_cols = [c for c in df.columns if str(c).startswith('[NET]')]
     clean_net_map = {}
     for col in net_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        df[col] = df[col].apply(lambda x: 1 if x > 0 else 0) # Binary
+        df[col] = df[col].apply(lambda x: 1 if x > 0 else 0)
         clean_name = col.replace('[NET]', '').replace('[NET] ', '').strip()
         clean_net_map[col] = clean_name
         df.rename(columns={col: clean_name}, inplace=True)
@@ -121,69 +154,138 @@ def load_data():
     return df
 
 # ==========================================
-# 3. AI INSIGHT ENGINE
+# 3. ANALYTICS LOGIC (TRENDS & INSIGHTS)
 # ==========================================
-def generate_sharp_insights(df, theme_cols):
-    if df.empty: return "No data available for analysis."
+def calculate_trend_change(df, metric_col, group_col, time_col, target_group):
+    # Helper to calculate MoM/WoW change for a specific group (e.g., Theme)
+    # Sort by time
+    df_sorted = df.sort_values(time_col)
+    
+    # Get last two periods
+    periods = df_sorted[time_col].unique()
+    if len(periods) < 2: return 0.0
+    
+    last_period = periods[-1]
+    prev_period = periods[-2]
+    
+    # Get metric value for target group in last vs prev
+    def get_val(p):
+        d = df_sorted[df_sorted[time_col] == p]
+        return d[metric_col].sum() if metric_col in d.columns else len(d)
+
+    # For Themes, we need to filter first? No, df passed here is already filtered or aggregated?
+    # Let's assume df is the raw data with the theme column (0/1)
+    
+    val_last = df_sorted[df_sorted[time_col] == last_period][group_col].sum()
+    val_prev = df_sorted[df_sorted[time_col] == prev_period][group_col].sum()
+    
+    # Normalize by total volume in that period to get "Share" change (more accurate than raw volume change)
+    base_last = len(df_sorted[df_sorted[time_col] == last_period])
+    base_prev = len(df_sorted[df_sorted[time_col] == prev_period])
+    
+    if base_prev == 0: return 0.0
+    
+    share_last = val_last / base_last
+    share_prev = val_prev / base_prev
+    
+    # Return percentage point change or relative growth? 
+    # Relative growth of share is standard.
+    if share_prev == 0: return 0.0
+    return ((share_last - share_prev) / share_prev) * 100
+
+def generate_ai_insight(df, theme_cols, current_filters):
+    if df.empty: return "No data available."
     
     avg_rating = df['score'].mean()
-    total_reviews = len(df)
+    vol = len(df)
     
-    # 1. Sentiment Leader
-    brand_stats = df.groupby('App_Name')['score'].mean()
-    leader = brand_stats.idxmax()
-    laggard = brand_stats.idxmin()
+    # Sentiment Leader
+    brand_perf = df.groupby('App_Name')['score'].mean().sort_values(ascending=False)
+    leader = brand_perf.index[0]
+    trailer = brand_perf.index[-1]
     
-    # 2. Top Driver (Overall)
+    # Top Driver (Global)
     pos_df = df[df['score'] >= 4]
     top_driver = "N/A"
     if not pos_df.empty and theme_cols:
+        # Sum themes present in columns
         valid_themes = [t for t in theme_cols if t in pos_df.columns]
-        top_driver = pos_df[valid_themes].sum().idxmax()
-        
-    # 3. Top Barrier (Overall)
+        if valid_themes:
+            top_driver = pos_df[valid_themes].sum().idxmax()
+            
+    # Top Barrier (Global)
     neg_df = df[df['score'] <= 3]
     top_barrier = "N/A"
     if not neg_df.empty and theme_cols:
         valid_themes = [t for t in theme_cols if t in neg_df.columns]
-        top_barrier = neg_df[valid_themes].sum().idxmax()
-
-    insight_text = f"""
+        if valid_themes:
+            top_barrier = neg_df[valid_themes].sum().idxmax()
+            
+    filter_text = f"Filtered by: {current_filters}" if current_filters else "All Data"
+    
+    html = f"""
     <div class='ai-insight-box'>
-        <div class='ai-header'>🤖 AI Analyst: Strategic Brief</div>
+        <div class='ai-header'>🤖 AI Analyst: Live Strategic Brief</div>
         <div class='ai-text'>
-            • <b>Market Pulse:</b> Analyzing <b>{total_reviews:,}</b> reviews. The category average is <b>{avg_rating:.2f} ⭐</b>.<br>
-            • <b>Leaderboard:</b> <b>{leader}</b> is currently leading satisfaction ({brand_stats[leader]:.2f} ⭐), while <b>{laggard}</b> represents the highest churn risk.<br>
-            • <b>The "Why":</b> The primary engine of growth is <b>'{top_driver}'</b> (Top Driver), whereas <b>'{top_barrier}'</b> is the #1 friction point across the board.<br>
-            • <b>Action:</b> Focus marketing on <i>{top_driver}</i> and prioritize product fixes for <i>{top_barrier}</i>.
+            • <b>Context ({filter_text}):</b> Analyzing <b>{vol:,}</b> reviews. The average sentiment is <b>{avg_rating:.2f} ⭐</b>.<br>
+            • <b>Performance:</b> <b>{leader}</b> is currently outperforming the cohort, while <b>{trailer}</b> trails in satisfaction.<br>
+            • <b>Key Drivers:</b> Positive sentiment is heavily driven by <b>'{top_driver}'</b>.<br>
+            • <b>Critical Risks:</b> The most dominant complaint (Barrier) identified is <b>'{top_barrier}'</b>.<br>
+            • <b>Recommendation:</b> If <b>{top_barrier}</b> relates to product flow, prioritize UI/UX fixes immediately.
         </div>
     </div>
     """
-    return insight_text
+    return html
+
+def run_strategic_analysis(df, brand, theme_cols):
+    b_df = df[df['App_Name'] == brand]
+    if b_df.empty: return None
+    
+    vol = len(b_df)
+    score = b_df['score'].mean()
+    prom = len(b_df[b_df['score']==5])
+    det = len(b_df[b_df['score']<=3])
+    nps = ((prom - det) / vol * 100) if vol else 0
+    
+    pos_df = b_df[b_df['score']>=4]
+    drivers = []
+    if not pos_df.empty and theme_cols:
+        v = [t for t in theme_cols if t in pos_df.columns]
+        s = pos_df[v].sum().sort_values(ascending=False).head(3)
+        drivers = [(k,v,v/len(pos_df)*100) for k,v in s.items()]
+        
+    neg_df = b_df[b_df['score']<=3]
+    barriers = []
+    if not neg_df.empty and theme_cols:
+        v = [t for t in theme_cols if t in neg_df.columns]
+        s = neg_df[v].sum().sort_values(ascending=False).head(3)
+        barriers = [(k,v,v/len(neg_df)*100) for k,v in s.items()]
+        
+    return {"score":score, "nps":nps, "drivers":drivers, "barriers":barriers, "vol":vol}
 
 # ==========================================
-# 4. SIDEBAR & FILTERS
+# 4. SIDEBAR & INITIALIZATION
 # ==========================================
 with st.sidebar:
     st.title("🎛️ Command Center")
-    with st.spinner("Connecting..."):
+    with st.spinner("Syncing..."):
         df_raw = load_data()
     
     if df_raw.empty:
-        st.error("Database Empty.")
+        st.error("No Data.")
         st.stop()
 
     st.success(f"🟢 Live: {len(df_raw):,} Rows")
     st.markdown("---")
     
-    # --- FILTERS ---
+    # FILTERS
     min_d, max_d = df_raw['at'].min().date(), df_raw['at'].max().date()
     date_range = st.date_input("Period", [min_d, max_d], min_value=min_d, max_value=max_d)
     
     all_brands = sorted(df_raw['App_Name'].dropna().unique())
     sel_brands = st.multiselect("Brands", all_brands, default=all_brands)
     
-    # NEW: Review Length Filter
+    # 2. Add Character Filter (Requested)
     st.markdown("### 📝 Review Depth")
     len_filter = st.radio(
         "Character Count", 
@@ -191,20 +293,26 @@ with st.sidebar:
         index=0
     )
     
-    # Product Filter
     prod_cols = [c for c in ['Product_1','Product_2'] if c in df_raw.columns]
     all_prods = set()
     for c in prod_cols: all_prods.update(df_raw[c].dropna().unique())
     sel_prods = st.multiselect("Product Type", sorted(list(all_prods)))
+    
+    if 'PL Status' in df_raw.columns:
+        sel_pl = st.multiselect("PL Status", df_raw['PL Status'].dropna().unique())
+    else: sel_pl = []
 
-# --- APPLY FILTERING ---
+# --- FILTERING ---
 if len(date_range) == 2:
-    mask = (df_raw['at'].dt.date >= date_range[0]) & (df_raw['at'].dt.date <= date_range[1])
+    mask = (
+        (df_raw['at'].dt.date >= date_range[0]) & 
+        (df_raw['at'].dt.date <= date_range[1]) & 
+        (df_raw['App_Name'].isin(sel_brands))
+    )
 else:
-    mask = [True] * len(df_raw)
+    mask = df_raw['App_Name'].isin(sel_brands)
 
-mask &= df_raw['App_Name'].isin(sel_brands)
-
+# Apply Char Filter
 if len_filter == "Brief (<=29 chars)":
     mask &= (df_raw['length_bucket'] == 'Brief (<=29)')
 elif len_filter == "Detailed (>=30 chars)":
@@ -214,6 +322,7 @@ if sel_prods:
     p_mask = pd.Series(False, index=df_raw.index)
     for c in prod_cols: p_mask |= df_raw[c].isin(sel_prods)
     mask &= p_mask
+if sel_pl: mask &= (df_raw['PL Status'].isin(sel_pl))
 
 df = df_raw[mask].copy()
 theme_cols = st.session_state.get('theme_cols', [])
@@ -224,14 +333,13 @@ theme_cols = st.session_state.get('theme_cols', [])
 
 st.title("🦅 Strategic Intelligence Platform")
 
-# --- AI INSIGHT SECTION ---
-if not df.empty:
-    st.markdown(generate_sharp_insights(df, theme_cols), unsafe_allow_html=True)
+# 3. AI Insights (Dynamic based on filters)
+filter_desc = f"{len_filter}, {len(sel_brands)} Brands"
+st.markdown(generate_ai_insight(df, theme_cols, filter_desc), unsafe_allow_html=True)
 
-# --- TABS ---
 tab_exec, tab_drivers, tab_compare, tab_trends, tab_raw = st.tabs([
     "📊 Boardroom Summary", 
-    "🚀 Top 10 Drivers & Barriers", 
+    "🚀 Drivers & Barriers (Deep Dive)", 
     "⚔️ Head-to-Head", 
     "📈 Trends (MoM/WoW)", 
     "🔍 Data Explorer"
@@ -241,7 +349,7 @@ tab_exec, tab_drivers, tab_compare, tab_trends, tab_raw = st.tabs([
 with tab_exec:
     k1, k2, k3, k4 = st.columns(4)
     with k1: st.metric("Total Volume", f"{len(df):,}")
-    with k2: st.metric("Avg Rating", f"{df['score'].mean():.2f} ⭐")
+    with k2: st.metric("Market CSAT", f"{df['score'].mean():.2f} ⭐")
     with k3:
         prom = len(df[df['score']==5])
         det = len(df[df['score']<=3])
@@ -253,7 +361,6 @@ with tab_exec:
 
     st.markdown("---")
     
-    # Scatter Matrix
     brand_stats = df.groupby('App_Name').agg(
         Volume=('score', 'count'),
         CSAT=('score', 'mean'),
@@ -271,57 +378,71 @@ with tab_exec:
     fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)")
     st.plotly_chart(fig, use_container_width=True)
 
-# === TAB 2: DRIVERS & BARRIERS (CORE REQUEST) ===
+# === TAB 2: DRIVERS & BARRIERS (UPDATED AS PER REQUEST) ===
 with tab_drivers:
-    st.markdown("### 🚦 The Strategic Landscape: Drivers vs. Barriers")
-    st.info("Aggregated View at **NET x Brand Level**. Top 10 themes driving 4-5★ (Drivers) and 1-3★ (Barriers).")
+    st.markdown("### 🚦 Strategic Drivers & Barriers")
+    st.info("Select a Brand to view its Top 10 Drivers (from 4-5★ reviews) and Barriers (from 1-3★ reviews) with trends.")
     
-    c1, c2 = st.columns(2)
+    target_brand = st.selectbox("Select Brand to Analyze", sel_brands)
     
-    # 1. DRIVERS (4-5 Stars)
-    with c1:
-        st.markdown("#### 🚀 Top 10 Drivers (Positive)")
-        df_pos = df[df['score'].isin([4, 5])]
+    if target_brand and theme_cols:
+        b_df = df[df['App_Name'] == target_brand]
         
-        if not df_pos.empty and theme_cols:
-            # Group by Brand, sum all theme columns
-            valid_themes = [t for t in theme_cols if t in df_pos.columns]
-            driver_data = df_pos.groupby('App_Name')[valid_themes].sum().T
+        # --- DRIVERS (4-5 Stars) ---
+        pos_df = b_df[b_df['score'] >= 4]
+        pos_base = len(pos_df)
+        
+        # --- BARRIERS (1-3 Stars) ---
+        neg_df = b_df[b_df['score'] <= 3]
+        neg_base = len(neg_df)
+        
+        c1, c2 = st.columns(2)
+        
+        # Helper to build table
+        def build_theme_table(sub_df, base, themes):
+            if sub_df.empty or base == 0: return pd.DataFrame()
             
-            # Identify Top 10 Themes globally across selected brands
-            driver_data['Total'] = driver_data.sum(axis=1)
-            driver_data = driver_data.sort_values('Total', ascending=False).head(10).drop(columns=['Total'])
+            # 1. Sum counts
+            valid = [t for t in themes if t in sub_df.columns]
+            counts = sub_df[valid].sum().sort_values(ascending=False).head(10)
             
-            fig_d = px.imshow(driver_data, text_auto=True, aspect="auto", 
-                              color_continuous_scale='Greens', title="Top 10 Drivers (Volume)")
-            fig_d.update_layout(template="plotly_dark")
-            st.plotly_chart(fig_d, use_container_width=True)
-        else:
-            st.warning("Insufficient Positive Data")
+            # 2. Build Data
+            data = []
+            for theme, count in counts.items():
+                if count == 0: continue
+                # Calc MoM/WoW
+                mom = calculate_trend_change(sub_df, theme, theme, 'Month', theme)
+                wow = calculate_trend_change(sub_df, theme, theme, 'Week', theme)
+                
+                data.append({
+                    "Theme": theme,
+                    "Count": int(count),
+                    "% of Base": f"{(count/base)*100:.1f}%",
+                    "MoM Trend": f"{mom:+.1f}%",
+                    "WoW Trend": f"{wow:+.1f}%"
+                })
+            return pd.DataFrame(data)
 
-    # 2. BARRIERS (1-3 Stars)
-    with c2:
-        st.markdown("#### 🛑 Top 10 Barriers (Negative)")
-        df_neg = df[df['score'].isin([1, 2, 3])]
-        
-        if not df_neg.empty and theme_cols:
-            valid_themes = [t for t in theme_cols if t in df_neg.columns]
-            barrier_data = df_neg.groupby('App_Name')[valid_themes].sum().T
-            
-            # Identify Top 10 Barriers globally
-            barrier_data['Total'] = barrier_data.sum(axis=1)
-            barrier_data = barrier_data.sort_values('Total', ascending=False).head(10).drop(columns=['Total'])
-            
-            fig_b = px.imshow(barrier_data, text_auto=True, aspect="auto", 
-                              color_continuous_scale='Reds', title="Top 10 Barriers (Volume)")
-            fig_b.update_layout(template="plotly_dark")
-            st.plotly_chart(fig_b, use_container_width=True)
-        else:
-            st.warning("Insufficient Negative Data")
+        with c1:
+            st.markdown(f"#### 🚀 Top 10 Drivers (Positive)")
+            st.markdown(f"**Base:** {pos_base:,} Positive Reviews")
+            driver_table = build_theme_table(pos_df, pos_base, theme_cols)
+            if not driver_table.empty:
+                st.dataframe(driver_table, hide_index=True, use_container_width=True)
+            else:
+                st.warning("No Positive Data Found")
+
+        with c2:
+            st.markdown(f"#### 🛑 Top 10 Barriers (Negative)")
+            st.markdown(f"**Base:** {neg_base:,} Negative Reviews")
+            barrier_table = build_theme_table(neg_df, neg_base, theme_cols)
+            if not barrier_table.empty:
+                st.dataframe(barrier_table, hide_index=True, use_container_width=True)
+            else:
+                st.warning("No Negative Data Found")
 
 # === TAB 3: HEAD TO HEAD ===
 with tab_compare:
-    st.markdown("### ⚔️ Competitive Battleground")
     c1, c2 = st.columns(2)
     with c1: b1 = st.selectbox("Brand A", sel_brands, index=0 if sel_brands else None)
     with c2: 
@@ -329,43 +450,34 @@ with tab_compare:
         b2 = st.selectbox("Brand B", opts, index=0 if opts else None)
     
     if b1 and b2:
-        # Comparison Data
-        def get_stats(b):
-            d = df[df['App_Name']==b]
-            v = len(d)
-            s = d['score'].mean() if v else 0
-            n = (((len(d[d['score']==5]) - len(d[d['score']<=3])) / v) * 100) if v else 0
-            return [f"{s:.2f}", f"{n:.0f}", f"{v:,}"]
-            
-        comp_df = pd.DataFrame({
+        d1 = run_strategic_analysis(df, b1, theme_cols)
+        d2 = run_strategic_analysis(df, b2, theme_cols)
+        
+        cdf = pd.DataFrame({
             "Metric": ["CSAT", "NPS Proxy", "Volume"],
-            b1: get_stats(b1),
-            b2: get_stats(b2)
+            b1: [f"{d1['score']:.2f}", f"{d1['nps']:.0f}", f"{d1['vol']:,}"],
+            b2: [f"{d2['score']:.2f}", f"{d2['nps']:.0f}", f"{d2['vol']:,}"]
         }).set_index("Metric")
+        st.dataframe(cdf, use_container_width=True)
         
-        st.dataframe(comp_df, use_container_width=True)
-        
-        # Radar Chart
+        # Radar
         if theme_cols:
-            # Find common top drivers
-            d1 = df[(df['App_Name']==b1) & (df['score']>=4)][theme_cols].sum().sort_values(ascending=False).head(5).index.tolist()
-            d2 = df[(df['App_Name']==b2) & (df['score']>=4)][theme_cols].sum().sort_values(ascending=False).head(5).index.tolist()
-            common = list(set(d1 + d2))
-            
-            def get_pct(b, themes):
-                d = df[df['App_Name']==b]
-                if d.empty: return [0]*len(themes)
-                return [(d[t].sum()/len(d)*100) for t in themes]
-
-            fig = go.Figure()
-            fig.add_trace(go.Scatterpolar(r=get_pct(b1, common), theta=common, fill='toself', name=b1))
-            fig.add_trace(go.Scatterpolar(r=get_pct(b2, common), theta=common, fill='toself', name=b2))
-            fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Theme Overlap (%)")
-            st.plotly_chart(fig, use_container_width=True)
+            t1 = [x[0] for x in d1['drivers']] if d1['drivers'] else []
+            t2 = [x[0] for x in d2['drivers']] if d2['drivers'] else []
+            common = list(set(t1 + t2))[:6]
+            if common:
+                def gp(b, tlist):
+                    d = df[df['App_Name']==b]
+                    return [(d[t].sum()/len(d)*100) if not d.empty else 0 for t in tlist]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatterpolar(r=gp(b1, common), theta=common, fill='toself', name=b1))
+                fig.add_trace(go.Scatterpolar(r=gp(b2, common), theta=common, fill='toself', name=b2))
+                fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Theme Overlap")
+                st.plotly_chart(fig, use_container_width=True)
 
 # === TAB 4: TRENDS ===
 with tab_trends:
-    st.markdown("### 📈 Time Series Intelligence")
     view = st.radio("View", ["Monthly (MoM)", "Weekly (WoW)"], horizontal=True)
     time_col = 'Month' if "Monthly" in view else 'Week'
     
@@ -385,5 +497,7 @@ with tab_trends:
 
 # === TAB 5: EXPLORER ===
 with tab_raw:
-    st.markdown("### 🔍 Raw Data Stream")
-    st.dataframe(df[['at', 'App_Name', 'score', 'Review_Text', 'length_bucket']], use_container_width=True)
+    q = st.text_input("Deep Search", placeholder="Type keywords...")
+    f_df = df.copy()
+    if q: f_df = f_df[f_df['Review_Text'].astype(str).str.contains(q, case=False, na=False)]
+    st.dataframe(f_df[['at', 'App_Name', 'score', 'Review_Text', 'length_bucket']], use_container_width=True)
