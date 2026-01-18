@@ -10,7 +10,7 @@ from supabase import create_client, Client
 # 1. PAGE CONFIG & STRATEGIC STYLING
 # ==========================================
 st.set_page_config(
-    page_title="Strategic Intelligence Platform",
+    page_title="Reviews Dashboard",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -564,3 +564,4 @@ with tab_trends:
 # === TAB 6: DATA ===
 with tab_raw:
     st.dataframe(df[['at', 'App_Name', 'score', 'Review_Text', 'length_bucket']], use_container_width=True)
+
