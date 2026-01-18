@@ -352,14 +352,18 @@ with tab_trends:
         # Volume Growth
         pivot_vol = trend_df.pivot(index=time_col, columns='App_Name', values='Volume').fillna(0)
         growth_vol = pivot_vol.pct_change() * 100
-        # Filter for cleaner viz (drop first row which is NaN)
-        growth_vol = growth_vol.iloc[1:]
+        growth_vol = growth_vol.iloc[1:] # Drop first row (NaNs)
         
         with c3:
             st.markdown(f"**🔥 Volume Growth % ({'MoM' if view_mode=='Monthly' else 'WoW'})**")
-            fig_h1 = px.imshow(growth_vol.T, text_auto='.1f', aspect="auto", color_continuous_scale='RdBu', midpoint=0)
-            fig_h1.update_layout(template="plotly_dark")
-            st.plotly_chart(fig_h1, use_container_width=True)
+            if not growth_vol.empty:
+                # FIX: use color_continuous_midpoint=0 for centering
+                fig_h1 = px.imshow(growth_vol.T, text_auto='.1f', aspect="auto", 
+                                   color_continuous_scale='RdBu', color_continuous_midpoint=0)
+                fig_h1.update_layout(template="plotly_dark")
+                st.plotly_chart(fig_h1, use_container_width=True)
+            else:
+                st.info("Not enough data history to calculate growth.")
 
         # Rating Change
         pivot_rat = trend_df.pivot(index=time_col, columns='App_Name', values='Rating')
@@ -368,9 +372,13 @@ with tab_trends:
         
         with c4:
             st.markdown(f"**⭐ Rating Change ({'MoM' if view_mode=='Monthly' else 'WoW'})**")
-            fig_h2 = px.imshow(diff_rat.T, text_auto='.2f', aspect="auto", color_continuous_scale='RdBu', midpoint=0)
-            fig_h2.update_layout(template="plotly_dark")
-            st.plotly_chart(fig_h2, use_container_width=True)
+            if not diff_rat.empty:
+                fig_h2 = px.imshow(diff_rat.T, text_auto='.2f', aspect="auto", 
+                                   color_continuous_scale='RdBu', color_continuous_midpoint=0)
+                fig_h2.update_layout(template="plotly_dark")
+                st.plotly_chart(fig_h2, use_container_width=True)
+            else:
+                st.info("Not enough data history to calculate rating change.")
 
 # === TAB 3: HEAD TO HEAD ===
 with tab_compare:
@@ -393,20 +401,20 @@ with tab_compare:
         st.dataframe(pd.DataFrame(comp_data).set_index("Metric"), use_container_width=True)
         
         if theme_cols:
-            da = [x[0] for x in data_a['drivers']] if data_a['drivers'] else []
-            db = [x[0] for x in data_b['drivers']] if data_b['drivers'] else []
-            common = list(set(da + db))[:6]
+            drivers_a = [x[0] for x in data_a['drivers']] if data_a['drivers'] else []
+            drivers_b = [x[0] for x in data_b['drivers']] if data_b['drivers'] else []
+            common_themes = list(set(drivers_a + drivers_b))[:6]
             
-            if common:
-                def get_pct(b, t_list):
-                    d = df[df['App_Name'] == b]
+            if common_themes:
+                def get_theme_pct(b_name, t_list):
+                    d = df[df['App_Name'] == b_name]
                     if d.empty: return [0]*len(t_list)
                     return [(d[t].sum() / len(d) * 100) for t in t_list]
 
                 fig = go.Figure()
-                fig.add_trace(go.Scatterpolar(r=get_pct(brand_a, common), theta=common, fill='toself', name=brand_a))
-                fig.add_trace(go.Scatterpolar(r=get_pct(brand_b, common), theta=common, fill='toself', name=brand_b))
-                fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Thematic Comparison")
+                fig.add_trace(go.Scatterpolar(r=get_theme_pct(brand_a, common_themes), theta=common_themes, fill='toself', name=brand_a))
+                fig.add_trace(go.Scatterpolar(r=get_theme_pct(brand_b, common_themes), theta=common_themes, fill='toself', name=brand_b))
+                fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Thematic Footprint Comparison")
                 st.plotly_chart(fig, use_container_width=True)
 
 # === TAB 4: THEMATIC DEEP DIVE ===
