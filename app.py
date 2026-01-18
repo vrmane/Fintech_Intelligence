@@ -1,5 +1,5 @@
 # ============================================================
-# FINTECH EXECUTIVE VoC INTELLIGENCE – SINGLE PAGE (FINAL FIX)
+# FINTECH EXECUTIVE VoC INTELLIGENCE – SINGLE PAGE (NET LEVEL)
 # ============================================================
 
 import streamlit as st
@@ -46,8 +46,9 @@ def load_data():
 
     df = pd.DataFrame(rows)
     if df.empty:
-        return df, []
+        return df, [], []
 
+    # ---------------- Normalisation ----------------
     df['Review_Date'] = pd.to_datetime(df['Review_Date'], errors='coerce')
     df = df.dropna(subset=['Review_Date'])
 
@@ -68,13 +69,17 @@ def load_data():
         labels=["Detractor", "Passive", "Promoter"]
     )
 
+    # ---------------- NET columns ----------------
     net_cols = [c for c in df.columns if c.startswith("[NET]")]
     for c in net_cols:
         df[c] = df[c].fillna(0).astype(bool)
 
-    return df, net_cols
+    # ---------------- Product columns ----------------
+    product_cols = [c for c in df.columns if c.startswith("Product_")]
 
-df_raw, net_cols = load_data()
+    return df, net_cols, product_cols
+
+df_raw, net_cols, product_cols = load_data()
 if df_raw.empty:
     st.stop()
 
@@ -84,19 +89,35 @@ if df_raw.empty:
 with st.sidebar:
     st.header("🎛 Filters")
 
+    # Brand
     brands = sorted(df_raw['App_Name'].unique())
     sel_brands = st.multiselect("Brand", brands, default=brands)
 
+    # Date
     min_d, max_d = df_raw['Review_Date'].min(), df_raw['Review_Date'].max()
     date_range = st.date_input("Date Range", [min_d, max_d])
 
+    # Rating
     ratings = st.multiselect("Ratings", [1, 2, 3, 4, 5], default=[1, 2, 3, 4, 5])
 
+    # Review length
     char_filter = st.radio(
         "Review Length",
         ["All", "Short (≤29)", "Detailed (30+)"],
         index=0
     )
+
+    # Product filter
+    prod_values = sorted(
+        set(
+            df_raw[product_cols]
+            .fillna("")
+            .values
+            .ravel()
+        ) - {""}
+    )
+
+    sel_products = st.multiselect("Product", prod_values)
 
 # ============================================================
 # APPLY FILTERS
@@ -108,8 +129,16 @@ df = df_raw[
     (df_raw['Review_Date'].dt.date <= date_range[1])
 ]
 
+# Review length filter
 if char_filter != "All":
     df = df[df['length_bucket'] == char_filter]
+
+# Product filter (OR across Product_1..n)
+if sel_products:
+    prod_mask = False
+    for c in product_cols:
+        prod_mask |= df[c].isin(sel_products)
+    df = df[prod_mask]
 
 if df.empty:
     st.warning("No data for selected filters")
@@ -118,7 +147,7 @@ if df.empty:
 # ============================================================
 # EXECUTIVE HEADER
 # ============================================================
-st.title("📊 Executive Voice of Customer Intelligence")
+st.title("📊 Executive Voice of Customer Intelligence (NET View)")
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Total Reviews", f"{len(df):,}")
@@ -154,7 +183,7 @@ st.plotly_chart(
 )
 
 # ============================================================
-# REVIEW CREDIBILITY (FINAL FIX)
+# REVIEW CREDIBILITY
 # ============================================================
 st.subheader("📏 Review Credibility Signals")
 
@@ -184,7 +213,7 @@ cred['Long_Negative_%'] *= 100
 st.dataframe(cred.sort_values('Avg_Chars', ascending=False), use_container_width=True)
 
 # ============================================================
-# DRIVERS & BARRIERS
+# NET DRIVERS & NET BARRIERS
 # ============================================================
 def net_heat(sub_df, title, scale):
     if sub_df.empty or not net_cols:
@@ -202,14 +231,14 @@ def net_heat(sub_df, title, scale):
         use_container_width=True
     )
 
-net_heat(df[df['Rating'] >= 4], "🚀 % of Promoters Mentioning Theme", "Greens")
-net_heat(df[df['Rating'] <= 2], "🛑 % of Detractors Mentioning Theme", "Reds")
+net_heat(df[df['Rating'] >= 4], "🚀 NET Drivers – % of Promoters Mentioning NET", "Greens")
+net_heat(df[df['Rating'] <= 2], "🛑 NET Barriers – % of Detractors Mentioning NET", "Reds")
 
 # ============================================================
-# AUTO-GENERATED CEO SUMMARY
+# AUTO-GENERATED CEO SUMMARY (NET LEVEL)
 # ============================================================
 st.markdown("---")
-st.subheader("🧠 Auto-Generated CEO Summary")
+st.subheader("🧠 Auto-Generated CEO Summary (NET View)")
 
 market_avg = df['Rating'].mean()
 
@@ -220,21 +249,32 @@ for brand in df['App_Name'].unique():
     det = (bdf['Rating'] <= 2).mean() * 100
     prom = (bdf['Rating'] >= 4).mean() * 100
 
-    driver = "N/A"
-    barrier = "N/A"
+    top_driver = "N/A"
+    top_barrier = "N/A"
 
     if net_cols:
         if not bdf[bdf['Rating'] >= 4].empty:
-            driver = bdf[bdf['Rating'] >= 4][net_cols].sum().idxmax().replace("[NET]", "")
+            top_driver = (
+                bdf[bdf['Rating'] >= 4][net_cols]
+                .mean()
+                .idxmax()
+                .replace("[NET]", "")
+            )
         if not bdf[bdf['Rating'] <= 2].empty:
-            barrier = bdf[bdf['Rating'] <= 2][net_cols].sum().idxmax().replace("[NET]", "")
+            top_barrier = (
+                bdf[bdf['Rating'] <= 2][net_cols]
+                .mean()
+                .idxmax()
+                .replace("[NET]", "")
+            )
 
     st.markdown(
-        f"**{brand}** has an average rating of **{avg:.2f}**, "
+        f"**{brand}** records an average rating of **{avg:.2f}**, "
         f"{'above' if avg > market_avg else 'below'} the market benchmark. "
-        f"Promoters account for **{prom:.1f}%**, while detractors stand at **{det:.1f}%**. "
-        f"Customers most frequently praise **{driver}**, whereas **{barrier}** "
-        f"is the dominant friction point. Leadership focus should amplify proven strengths "
-        f"validated by detailed positive feedback while urgently resolving detractor-led issues "
-        f"to sustain brand momentum."
+        f"Promoters contribute **{prom:.1f}%** of reviews, while detractors account for "
+        f"**{det:.1f}%**. At the NET level, customers most frequently highlight "
+        f"**{top_driver}** as a positive driver, whereas **{top_barrier}** is the most "
+        f"cited barrier among detractors. Leadership focus should centre on amplifying "
+        f"high-impact NET strengths while urgently addressing NET-level friction points "
+        f"to sustain brand trust and growth."
     )
