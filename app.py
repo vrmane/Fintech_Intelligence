@@ -156,12 +156,18 @@ def load_data():
 # ==========================================
 # 3. ANALYTICS LOGIC (TRENDS & INSIGHTS)
 # ==========================================
+def dark_chart(fig):
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(255,255,255,0.03)",
+        font=dict(color="#94a3b8"),
+        margin=dict(l=10, r=10, t=30, b=10)
+    )
+    return fig
+
 def calculate_trend_change(df, metric_col, group_col, time_col, target_group):
-    # Helper to calculate MoM/WoW change for a specific group (e.g., Theme)
-    # Sort by time
     df_sorted = df.sort_values(time_col)
-    
-    # Get last two periods
     periods = df_sorted[time_col].unique()
     if len(periods) < 2: return 0.0
     
@@ -171,7 +177,6 @@ def calculate_trend_change(df, metric_col, group_col, time_col, target_group):
     val_last = df_sorted[df_sorted[time_col] == last_period][group_col].sum()
     val_prev = df_sorted[df_sorted[time_col] == prev_period][group_col].sum()
     
-    # Normalize by total volume in that period to get "Share" change (more accurate than raw volume change)
     base_last = len(df_sorted[df_sorted[time_col] == last_period])
     base_prev = len(df_sorted[df_sorted[time_col] == prev_period])
     
@@ -180,7 +185,6 @@ def calculate_trend_change(df, metric_col, group_col, time_col, target_group):
     share_last = val_last / base_last
     share_prev = val_prev / base_prev
     
-    # Return relative growth of share
     if share_prev == 0: return 0.0
     return ((share_last - share_prev) / share_prev) * 100
 
@@ -190,21 +194,17 @@ def generate_ai_insight(df, theme_cols, current_filters):
     avg_rating = df['score'].mean()
     vol = len(df)
     
-    # Sentiment Leader
     brand_perf = df.groupby('App_Name')['score'].mean().sort_values(ascending=False)
     leader = brand_perf.index[0]
     trailer = brand_perf.index[-1]
     
-    # Top Driver (Global)
     pos_df = df[df['score'] >= 4]
     top_driver = "N/A"
     if not pos_df.empty and theme_cols:
-        # Sum themes present in columns
         valid_themes = [t for t in theme_cols if t in pos_df.columns]
         if valid_themes:
             top_driver = pos_df[valid_themes].sum().idxmax()
             
-    # Top Barrier (Global)
     neg_df = df[df['score'] <= 3]
     top_barrier = "N/A"
     if not neg_df.empty and theme_cols:
@@ -218,10 +218,10 @@ def generate_ai_insight(df, theme_cols, current_filters):
     <div class='ai-insight-box'>
         <div class='ai-header'>🤖 AI Analyst: Live Strategic Brief</div>
         <div class='ai-text'>
-            • <b>Context ({filter_text}):</b> Analyzing <b>{vol:,}</b> reviews. The average sentiment is <b>{avg_rating:.2f} ⭐</b>.<br>
-            • <b>Performance:</b> <b>{leader}</b> is currently outperforming the cohort, while <b>{trailer}</b> trails in satisfaction.<br>
+            • <b>Context ({filter_text}):</b> Analyzing <b>{vol:,}</b> reviews. The category sentiment is <b>{avg_rating:.2f} ⭐</b>.<br>
+            • <b>Performance:</b> <b>{leader}</b> is currently outperforming, while <b>{trailer}</b> trails in satisfaction.<br>
             • <b>Key Drivers:</b> Positive sentiment is heavily driven by <b>'{top_driver}'</b>.<br>
-            • <b>Critical Risks:</b> The most dominant complaint (Barrier) identified is <b>'{top_barrier}'</b>.<br>
+            • <b>Critical Risks:</b> The most dominant complaint (Barrier) is <b>'{top_barrier}'</b>.<br>
             • <b>Recommendation:</b> If <b>{top_barrier}</b> relates to product flow, prioritize UI/UX fixes immediately.
         </div>
     </div>
@@ -276,7 +276,7 @@ with st.sidebar:
     all_brands = sorted(df_raw['App_Name'].dropna().unique())
     sel_brands = st.multiselect("Brands", all_brands, default=all_brands)
     
-    # 2. Add Character Filter (Requested)
+    # Character Filter
     st.markdown("### 📝 Review Depth")
     len_filter = st.radio(
         "Character Count", 
@@ -293,7 +293,6 @@ with st.sidebar:
         sel_pl = st.multiselect("PL Status", df_raw['PL Status'].dropna().unique())
     else: sel_pl = []
     
-    # Sentiment Filter
     if 'Sentiment' in df_raw.columns:
         sentiment_opts = sorted(df_raw['Sentiment'].dropna().unique())
         sel_sentiment = st.multiselect("Sentiment", sentiment_opts)
@@ -319,7 +318,6 @@ if sel_prods:
     mask &= p_mask
     
 if sel_pl: mask &= (df_raw['PL Status'].isin(sel_pl))
-
 if sel_sentiment: mask &= (df_raw['Sentiment'].isin(sel_sentiment))
 
 df = df_raw[mask].copy()
@@ -331,13 +329,12 @@ theme_cols = st.session_state.get('theme_cols', [])
 
 st.title("🦅 Strategic Intelligence Platform")
 
-# 3. AI Insights (Dynamic based on filters)
 filter_desc = f"{len_filter}, {len(sel_brands)} Brands"
 st.markdown(generate_ai_insight(df, theme_cols, filter_desc), unsafe_allow_html=True)
 
 tab_exec, tab_drivers, tab_compare, tab_trends, tab_raw = st.tabs([
     "📊 Boardroom Summary", 
-    "🚀 Drivers & Barriers (Deep Dive)", 
+    "🚀 Drivers & Barriers", 
     "⚔️ Head-to-Head", 
     "📈 Trends (MoM/WoW)", 
     "🔍 Data Explorer"
@@ -373,71 +370,82 @@ with tab_exec:
         color_discrete_sequence=px.colors.qualitative.Bold, height=500
     )
     fig.update_traces(textposition='top center')
-    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(dark_chart(fig), use_container_width=True)
 
-# === TAB 2: DRIVERS & BARRIERS (UPDATED AS PER REQUEST) ===
+# === TAB 2: DRIVERS & BARRIERS (UPDATED) ===
 with tab_drivers:
-    st.markdown("### 🚦 Strategic Drivers & Barriers")
-    st.info("Select a Brand to view its Top 10 Drivers (from 4-5★ reviews) and Barriers (from 1-3★ reviews) with trends.")
+    st.markdown("### 🚦 The Strategic Landscape")
+    st.info("Top themes derived from 4-5★ reviews (Drivers) and 1-3★ reviews (Barriers).")
     
+    # 1. CROSS-BRAND COMPARISON
+    st.markdown("#### ⚔️ Market Comparison (Heatmaps)")
+    
+    pos_bases = df[df['score']>=4].groupby('App_Name').size()
+    neg_bases = df[df['score']<=3].groupby('App_Name').size()
+    
+    c_h1, c_h2 = st.columns(2)
+    
+    with c_h1:
+        st.markdown("**🚀 Top Drivers (% of Positive Reviews)**")
+        if not pos_bases.empty and theme_cols:
+            valid_themes = [t for t in theme_cols if t in df.columns]
+            pos_data = df[df['score']>=4].groupby('App_Name')[valid_themes].sum().T
+            pos_pct = pos_data.div(pos_bases, axis=1) * 100
+            pos_pct['Avg'] = pos_pct.mean(axis=1)
+            pos_pct = pos_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
+            fig = px.imshow(pos_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens')
+            st.plotly_chart(dark_chart(fig), use_container_width=True)
+            
+    with c_h2:
+        st.markdown("**🛑 Top Barriers (% of Negative Reviews)**")
+        if not neg_bases.empty and theme_cols:
+            valid_themes = [t for t in theme_cols if t in df.columns]
+            neg_data = df[df['score']<=3].groupby('App_Name')[valid_themes].sum().T
+            neg_pct = neg_data.div(neg_bases, axis=1) * 100
+            neg_pct['Avg'] = neg_pct.mean(axis=1)
+            neg_pct = neg_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
+            fig = px.imshow(neg_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds')
+            st.plotly_chart(dark_chart(fig), use_container_width=True)
+
+    st.markdown("---")
+
+    # 2. SINGLE BRAND DEEP DIVE
+    st.markdown("#### 🔍 Brand Deep Dive")
     target_brand = st.selectbox("Select Brand to Analyze", sel_brands)
     
     if target_brand and theme_cols:
         b_df = df[df['App_Name'] == target_brand]
-        
-        # --- DRIVERS (4-5 Stars) ---
         pos_df = b_df[b_df['score'] >= 4]
-        pos_base = len(pos_df)
-        
-        # --- BARRIERS (1-3 Stars) ---
         neg_df = b_df[b_df['score'] <= 3]
-        neg_base = len(neg_df)
         
         c1, c2 = st.columns(2)
         
-        # Helper to build table
         def build_theme_table(sub_df, base, themes):
             if sub_df.empty or base == 0: return pd.DataFrame()
-            
-            # 1. Sum counts
             valid = [t for t in themes if t in sub_df.columns]
             counts = sub_df[valid].sum().sort_values(ascending=False).head(10)
-            
-            # 2. Build Data
             data = []
             for theme, count in counts.items():
                 if count == 0: continue
-                # Calc MoM/WoW
                 mom = calculate_trend_change(sub_df, theme, theme, 'Month', theme)
                 wow = calculate_trend_change(sub_df, theme, theme, 'Week', theme)
-                
                 data.append({
-                    "Theme": theme,
-                    "Count": int(count),
-                    "% of Base": f"{(count/base)*100:.1f}%",
-                    "MoM Trend": f"{mom:+.1f}%",
-                    "WoW Trend": f"{wow:+.1f}%"
+                    "Theme": theme, "Count": int(count), "% of Base": f"{(count/base)*100:.1f}%",
+                    "MoM": f"{mom:+.1f}%", "WoW": f"{wow:+.1f}%"
                 })
             return pd.DataFrame(data)
 
         with c1:
-            st.markdown(f"#### 🚀 Top 10 Drivers (Positive)")
-            st.markdown(f"**Base:** {pos_base:,} Positive Reviews")
-            driver_table = build_theme_table(pos_df, pos_base, theme_cols)
-            if not driver_table.empty:
-                st.dataframe(driver_table, hide_index=True, use_container_width=True)
-            else:
-                st.warning("No Positive Data Found")
+            st.markdown(f"**🚀 Drivers (Base: {len(pos_df):,})**")
+            dt = build_theme_table(pos_df, len(pos_df), theme_cols)
+            if not dt.empty: st.dataframe(dt, hide_index=True, use_container_width=True)
+            else: st.info("No data")
 
         with c2:
-            st.markdown(f"#### 🛑 Top 10 Barriers (Negative)")
-            st.markdown(f"**Base:** {neg_base:,} Negative Reviews")
-            barrier_table = build_theme_table(neg_df, neg_base, theme_cols)
-            if not barrier_table.empty:
-                st.dataframe(barrier_table, hide_index=True, use_container_width=True)
-            else:
-                st.warning("No Negative Data Found")
+            st.markdown(f"**🛑 Barriers (Base: {len(neg_df):,})**")
+            bt = build_theme_table(neg_df, len(neg_df), theme_cols)
+            if not bt.empty: st.dataframe(bt, hide_index=True, use_container_width=True)
+            else: st.info("No data")
 
 # === TAB 3: HEAD TO HEAD ===
 with tab_compare:
@@ -458,7 +466,6 @@ with tab_compare:
         }).set_index("Metric")
         st.dataframe(cdf, use_container_width=True)
         
-        # Radar
         if theme_cols:
             t1 = [x[0] for x in d1['drivers']] if d1['drivers'] else []
             t2 = [x[0] for x in d2['drivers']] if d2['drivers'] else []
@@ -486,12 +493,10 @@ with tab_trends:
         c1, c2 = st.columns(2)
         with c1:
             fig = px.line(trend, x=time_col, y='mean', color='App_Name', markers=True, title="CSAT Trend")
-            fig.update_layout(template="plotly_dark")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(dark_chart(fig), use_container_width=True)
         with c2:
             fig = px.bar(trend, x=time_col, y='count', color='App_Name', title="Volume Trend")
-            fig.update_layout(template="plotly_dark")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(dark_chart(fig), use_container_width=True)
 
 # === TAB 5: EXPLORER ===
 with tab_raw:
