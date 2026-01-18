@@ -153,7 +153,6 @@ def calculate_growth_matrix(df, theme_cols, time_col, brands):
     valid_themes = [t for t in theme_cols if t in df.columns]
     if not valid_themes: return pd.DataFrame()
     
-    # Get Top 10 themes by volume for this slice
     top_themes = df[valid_themes].sum().sort_values(ascending=False).head(10).index.tolist()
     matrix = {}
     
@@ -167,14 +166,9 @@ def calculate_growth_matrix(df, theme_cols, time_col, brands):
         last = periods[-1]
         prev = periods[-2]
         
-        # Calculate % Share Growth (Not just volume growth)
-        # This handles the case where total volume changes drastically
-        
-        # Last Period
         last_df = b_df[b_df[time_col] == last]
         last_vol = len(last_df)
         
-        # Prev Period
         prev_df = b_df[b_df[time_col] == prev]
         prev_vol = len(prev_df)
         
@@ -185,9 +179,8 @@ def calculate_growth_matrix(df, theme_cols, time_col, brands):
             else:
                 share_last = last_df[t].sum() / last_vol if last_vol else 0
                 share_prev = prev_df[t].sum() / prev_vol
-                # Growth in Share points or Relative %? Let's do relative %
                 if share_prev == 0:
-                    g = 0.0 # undefined
+                    g = 0.0
                 else:
                     g = ((share_last - share_prev) / share_prev) * 100
             growth.append(g)
@@ -206,7 +199,7 @@ def get_brand_insights(df, brand, theme_cols):
     brand_avg = b_df['score'].mean()
     diff = brand_avg - cohort_avg
     pos_text = "outperforming" if diff > 0 else "lagging behind"
-    insights.append(f"**Market Position:** {brand} is <span class='highlight-neu'>{pos_text}</span> the cohort average by **{abs(diff):.2f} stars**.")
+    insights.append(f"**Position:** {pos_text} market by **{abs(diff):.2f} ⭐**")
     
     pos_df = b_df[b_df['score'] >= 4]
     if not pos_df.empty and theme_cols:
@@ -214,7 +207,7 @@ def get_brand_insights(df, brand, theme_cols):
         if valid:
             top_d = pos_df[valid].sum().idxmax()
             pct = (pos_df[top_d].sum() / len(pos_df)) * 100
-            insights.append(f"**Growth Engine:** Positive sentiment is anchored on <span class='highlight-pos'>'{top_d}'</span>, appearing in **{pct:.1f}%** of 4-5★ reviews.")
+            insights.append(f"**Driver:** <span style='color:#4ade80'>{top_d}</span> (**{pct:.0f}%** of positive)")
             
     neg_df = b_df[b_df['score'] <= 3]
     if not neg_df.empty and theme_cols:
@@ -222,12 +215,48 @@ def get_brand_insights(df, brand, theme_cols):
         if valid:
             top_b = neg_df[valid].sum().idxmax()
             pct = (neg_df[top_b].sum() / len(neg_df)) * 100
-            insights.append(f"**Critical Risk:** The dominant friction point is <span class='highlight-neg'>'{top_b}'</span>, flagged in **{pct:.1f}%** of complaints.")
-    
-    share = (len(b_df) / len(df)) * 100
-    insights.append(f"**Voice Share:** Commands **{share:.1f}%** of the filtered review volume.")
-    
+            insights.append(f"**Risk:** <span style='color:#f87171'>{top_b}</span> (**{pct:.0f}%** of negative)")
+            
     return insights
+
+def generate_ai_insight(df, theme_cols, current_filters):
+    if df.empty: return "No data available."
+    
+    avg_rating = df['score'].mean()
+    vol = len(df)
+    
+    brand_perf = df.groupby('App_Name')['score'].mean().sort_values(ascending=False)
+    leader = brand_perf.index[0]
+    trailer = brand_perf.index[-1]
+    
+    pos_df = df[df['score'] >= 4]
+    top_driver = "N/A"
+    if not pos_df.empty and theme_cols:
+        valid_themes = [t for t in theme_cols if t in pos_df.columns]
+        if valid_themes:
+            top_driver = pos_df[valid_themes].sum().idxmax()
+            
+    neg_df = df[df['score'] <= 3]
+    top_barrier = "N/A"
+    if not neg_df.empty and theme_cols:
+        valid_themes = [t for t in theme_cols if t in neg_df.columns]
+        if valid_themes:
+            top_barrier = neg_df[valid_themes].sum().idxmax()
+            
+    filter_text = f"Filtered by: {current_filters}" if current_filters else "All Data"
+    
+    html = f"""
+    <div class='ai-insight-box'>
+        <div class='ai-header'>🤖 AI Analyst: Live Strategic Brief</div>
+        <div class='ai-text'>
+            • <b>Context ({filter_text}):</b> Analyzing <b>{vol:,}</b> reviews. The category sentiment is <b>{avg_rating:.2f} ⭐</b>.<br>
+            • <b>Performance:</b> <b>{leader}</b> is currently outperforming, while <b>{trailer}</b> trails in satisfaction.<br>
+            • <b>Key Drivers:</b> Positive sentiment is heavily driven by <b>'{top_driver}'</b>.<br>
+            • <b>Critical Risks:</b> The most dominant complaint (Barrier) is <b>'{top_barrier}'</b>.
+        </div>
+    </div>
+    """
+    return html
 
 # ==========================================
 # 4. SIDEBAR & FILTERS
@@ -252,7 +281,7 @@ with st.sidebar:
     sel_brands = st.multiselect("Brands", all_brands, default=all_brands)
     
     st.markdown("### 📊 Metrics")
-    sel_ratings = st.multiselect("Rating", [1, 2, 3, 4, 5], default=[1, 2, 3, 4, 5])
+    sel_ratings = st.multiselect("Ratings", [1, 2, 3, 4, 5], default=[1, 2, 3, 4, 5])
 
     st.markdown("### 📝 Review Depth")
     len_filter = st.radio(
@@ -284,9 +313,9 @@ mask &= df_raw['App_Name'].isin(sel_brands)
 mask &= df_raw['score'].isin(sel_ratings)
 
 if len_filter == "Brief (<=29 chars)":
-    mask &= (df_raw['length_bucket'] == 'Brief (<=29)')
+    mask &= (df_raw['length_bucket'] == 'Brief (<=29 chars)')
 elif len_filter == "Detailed (>=30 chars)":
-    mask &= (df_raw['length_bucket'] == 'Detailed (>=30)')
+    mask &= (df_raw['length_bucket'] == 'Detailed (>=30 chars)')
 
 if sel_prods:
     p_mask = pd.Series(False, index=df_raw.index)
@@ -305,30 +334,27 @@ theme_cols = st.session_state.get('theme_cols', [])
 
 st.title("🦅 Strategic Intelligence Platform")
 
+# Top Level AI Summary
+filter_desc = f"{len_filter}, {len(sel_brands)} Brands"
+st.markdown(generate_ai_insight(df, theme_cols, filter_desc), unsafe_allow_html=True)
+
 tab_ai, tab_exec, tab_drivers, tab_compare, tab_trends, tab_raw = st.tabs([
-    "🤖 AI Analyst",
-    "📊 Boardroom Summary", 
-    "🚀 Drivers & Barriers", 
-    "⚔️ Head-to-Head", 
-    "📈 Trends", 
-    "🔍 Data"
+    "🤖 AI Analyst", "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📈 Trends", "🔍 Data"
 ])
 
 # === TAB 1: AI ANALYST ===
 with tab_ai:
-    st.markdown("### 🤖 Live Strategic Briefing")
-    st.info(f"Context: {len_filter} | {len(sel_brands)} Brands | {len(sel_ratings)} Rating Levels")
+    st.markdown("### 🤖 Brand Strategic Briefs")
     cols = st.columns(2)
     for i, brand in enumerate(sel_brands):
         with cols[i % 2]:
             insights = get_brand_insights(df, brand, theme_cols)
-            html_content = f"""
+            st.markdown(f"""
             <div class="ai-card">
-                <div class="ai-title">🔹 {brand}</div>
-                {"".join([f'<div class="ai-bullet">✦ {txt}</div>' for txt in insights])}
+                <div style="font-size:1.2em; font-weight:bold; margin-bottom:10px;">🔹 {brand}</div>
+                {"".join([f'<div style="margin-bottom:5px;">✦ {txt}</div>' for txt in insights])}
             </div>
-            """
-            st.markdown(html_content, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
 # === TAB 2: SUMMARY ===
 with tab_exec:
@@ -345,45 +371,42 @@ with tab_exec:
         st.metric("Critical Risk", f"{risk:.1f}%", delta="1-Star %", delta_color="inverse")
 
     st.markdown("---")
-    brand_stats = df.groupby('App_Name').agg(
-        Volume=('score', 'count'),
-        CSAT=('score', 'mean'),
-        One_Star=('score', lambda x: (x==1).sum()),
-        Five_Star=('score', lambda x: (x==5).sum())
-    ).reset_index()
-    brand_stats['NPS'] = ((brand_stats['Five_Star'] - brand_stats['One_Star']) / brand_stats['Volume'] * 100).round(1)
     
-    fig = px.scatter(
-        brand_stats, x="CSAT", y="NPS", size="Volume", color="App_Name", hover_name="App_Name", text="App_Name", title="Brand Performance Matrix", color_discrete_sequence=px.colors.qualitative.Bold, height=500
-    )
+    bs = df.groupby('App_Name').agg(
+        Vol=('score','count'), CSAT=('score','mean'),
+        One=('score', lambda x: (x==1).sum()), Five=('score', lambda x: (x==5).sum())
+    ).reset_index()
+    bs['NPS'] = ((bs['Five'] - bs['One'])/bs['Vol']*100).round(1)
+    
+    fig = px.scatter(bs, x="CSAT", y="NPS", size="Vol", color="App_Name", text="App_Name", 
+                     title="Brand Matrix (Size=Volume)", height=500)
     fig.update_traces(textposition='top center')
     st.plotly_chart(dark_chart(fig), use_container_width=True)
 
-# === TAB 3: DRIVERS & BARRIERS ===
+# === TAB 3: DRIVERS & BARRIERS (UPDATED) ===
 with tab_drivers:
-    st.markdown("### 🚦 Strategic Landscape")
+    st.markdown("### 🚦 Strategic Drivers & Barriers")
     
-    # HEATMAPS
-    pos_df_global = df[df['score']>=4]
-    neg_df_global = df[df['score']<=3]
-    pos_bases = pos_df_global.groupby('App_Name').size()
-    neg_bases = neg_df_global.groupby('App_Name').size()
-    
+    # 1. CROSS-BRAND HEATMAPS
     c_h1, c_h2 = st.columns(2)
+    pos_bases = df[df['score']>=4].groupby('App_Name').size()
+    neg_bases = df[df['score']<=3].groupby('App_Name').size()
+    
     with c_h1:
         st.markdown("**🚀 Drivers (Positive Theme Intensity)**")
         if not pos_bases.empty and theme_cols:
             valid = [t for t in theme_cols if t in df.columns]
-            p_data = pos_df_global.groupby('App_Name')[valid].sum().T
+            p_data = df[df['score']>=4].groupby('App_Name')[valid].sum().T
             p_pct = p_data.div(pos_bases, axis=1) * 100
             p_pct['Avg'] = p_pct.mean(axis=1)
             p_pct = p_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
             st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens'), use_container_width=True)
+            
     with c_h2:
         st.markdown("**🛑 Barriers (Negative Theme Intensity)**")
         if not neg_bases.empty and theme_cols:
             valid = [t for t in theme_cols if t in df.columns]
-            n_data = neg_df_global.groupby('App_Name')[valid].sum().T
+            n_data = df[df['score']<=3].groupby('App_Name')[valid].sum().T
             n_pct = n_data.div(neg_bases, axis=1) * 100
             n_pct['Avg'] = n_pct.mean(axis=1)
             n_pct = n_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
@@ -391,43 +414,69 @@ with tab_drivers:
 
     st.markdown("---")
     
-    # TREND MOMENTUM (NEW)
-    st.markdown("#### 📈 Theme Momentum (Cross-Brand Trends)")
-    trend_mode = st.radio("Momentum Focus", ["Drivers (Positive)", "Barriers (Negative)"], horizontal=True)
+    # 2. THEME EVOLUTION (MOVED HERE & UPGRADED)
+    st.markdown("### 🧬 Theme Evolution (Multi-Theme Comparison)")
     
-    if trend_mode == "Drivers (Positive)":
-        trend_df = pos_df_global
-        scale = 'Greens'
+    evo_type = st.radio("Trend Category", ["Drivers (Positive)", "Barriers (Negative)"], horizontal=True, key="evo_type_new")
+    
+    if "Positive" in evo_type:
+        trend_src = df[df['score'] >= 4]
     else:
-        trend_df = neg_df_global
-        scale = 'Reds'
+        trend_src = df[df['score'] <= 3]
+
+    if not trend_src.empty and theme_cols:
+        top_opts = trend_src[theme_cols].sum().sort_values(ascending=False).head(20).index.tolist()
+        sel_themes = st.multiselect("Compare Themes (Aggregated across selected brands)", top_opts, default=top_opts[:3])
         
+        if sel_themes:
+            t_view = st.radio("Time Grain", ["Monthly", "Weekly"], horizontal=True, key="evo_time")
+            t_col = 'Month' if t_view == "Monthly" else 'Week'
+            
+            trend_data = []
+            grouped = trend_src.groupby(t_col)
+            
+            for t_val, group in grouped:
+                base_vol = len(group)
+                if base_vol == 0: continue
+                for theme in sel_themes:
+                    if theme in group.columns:
+                        count = group[theme].sum()
+                        pct = (count / base_vol) * 100
+                        trend_data.append({t_col: str(t_val), "Theme": theme, "Prevalence": pct})
+            
+            if trend_data:
+                plot_df = pd.DataFrame(trend_data).sort_values(t_col)
+                fig_evo = px.line(plot_df, x=t_col, y="Prevalence", color="Theme", markers=True, title=f"Evolution of Selected {evo_type}", labels={"Prevalence": "% of Reviews"})
+                st.plotly_chart(dark_chart(fig_evo), use_container_width=True)
+            else:
+                st.info("No trend data available.")
+    
+    st.markdown("---")
+
+    # 3. CROSS-BRAND MOMENTUM
+    st.markdown("#### 📈 Theme Momentum (Growth Matrix)")
     c_t1, c_t2 = st.columns(2)
+    
     with c_t1:
         st.markdown("**📅 MoM Growth %**")
-        mom_matrix = calculate_growth_matrix(trend_df, theme_cols, 'Month', sel_brands)
+        mom_matrix = calculate_growth_matrix(trend_src, theme_cols, 'Month', sel_brands)
         if not mom_matrix.empty:
             st.plotly_chart(px.imshow(mom_matrix, text_auto='.1f', aspect="auto", color_continuous_scale='RdBu', color_continuous_midpoint=0), use_container_width=True)
-        else:
-            st.info("Insufficient Monthly Data")
+            
     with c_t2:
         st.markdown("**⚡ WoW Growth %**")
-        wow_matrix = calculate_growth_matrix(trend_df, theme_cols, 'Week', sel_brands)
+        wow_matrix = calculate_growth_matrix(trend_src, theme_cols, 'Week', sel_brands)
         if not wow_matrix.empty:
             st.plotly_chart(px.imshow(wow_matrix, text_auto='.1f', aspect="auto", color_continuous_scale='RdBu', color_continuous_midpoint=0), use_container_width=True)
-        else:
-            st.info("Insufficient Weekly Data")
 
-    # DETAIL TABLE
-    st.markdown("---")
-    st.markdown("#### 🔍 Deep Dive Table")
+    # 4. DEEP DIVE TABLE
+    st.markdown("#### 🔍 Brand Deep Dive Table")
     target_brand = st.selectbox("Select Brand", sel_brands)
     
     if target_brand and theme_cols:
         b_df = df[df['App_Name'] == target_brand]
         
         def calculate_trend_val(sub_df, group_col, time_col):
-            # Optimized simple trend for table
             d_sorted = sub_df.sort_values(time_col)
             periods = d_sorted[time_col].unique()
             if len(periods) < 2: return 0.0
@@ -443,7 +492,6 @@ with tab_drivers:
             data = []
             for theme, count in counts.items():
                 if count == 0: continue
-                # We assume simple volume trend for the table to keep it fast
                 mom = calculate_trend_val(sub_df, theme, 'Month')
                 wow = calculate_trend_val(sub_df, theme, 'Week')
                 data.append({
@@ -476,81 +524,42 @@ with tab_compare:
     if b1 and b2:
         def get_stats(b):
             d = df[df['App_Name']==b]
+            if d.empty: return ["0", "0", "0"]
             v = len(d)
-            s = d['score'].mean() if v else 0
-            n = (((len(d[d['score']==5]) - len(d[d['score']<=3])) / v) * 100) if v else 0
+            s = d['score'].mean()
+            n = ((len(d[d['score']==5]) - len(d[d['score']<=3]))/v)*100
             return [f"{s:.2f}", f"{n:.0f}", f"{v:,}"]
         
-        comp_df = pd.DataFrame({"Metric": ["CSAT", "NPS Proxy", "Volume"], b1: get_stats(b1), b2: get_stats(b2)}).set_index("Metric")
-        st.dataframe(comp_df, use_container_width=True)
+        comp = pd.DataFrame({"Metric": ["CSAT", "NPS", "Vol"], b1: get_stats(b1), b2: get_stats(b2)}).set_index("Metric")
+        st.dataframe(comp, use_container_width=True)
         
         if theme_cols:
-            d1 = df[(df['App_Name']==b1) & (df['score']>=4)][theme_cols].sum().sort_values(ascending=False).head(5).index.tolist()
-            d2 = df[(df['App_Name']==b2) & (df['score']>=4)][theme_cols].sum().sort_values(ascending=False).head(5).index.tolist()
+            d1 = df[(df['App_Name']==b1) & (df['score']>=4)][theme_cols].sum().nlargest(5).index.tolist()
+            d2 = df[(df['App_Name']==b2) & (df['score']>=4)][theme_cols].sum().nlargest(5).index.tolist()
             common = list(set(d1 + d2))
             
-            def get_pct(b, themes):
-                d = df[df['App_Name']==b]
-                return [(d[t].sum()/len(d)*100) if not d.empty else 0 for t in themes]
-
-            fig = go.Figure()
-            fig.add_trace(go.Scatterpolar(r=get_pct(b1, common), theta=common, fill='toself', name=b1))
-            fig.add_trace(go.Scatterpolar(r=get_pct(b2, common), theta=common, fill='toself', name=b2))
-            fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Theme Overlap")
-            st.plotly_chart(fig, use_container_width=True)
+            if common:
+                def gp(b):
+                    d = df[df['App_Name']==b]
+                    return [(d[t].sum()/len(d)*100) if not d.empty else 0 for t in common]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatterpolar(r=gp(b1), theta=common, fill='toself', name=b1))
+                fig.add_trace(go.Scatterpolar(r=gp(b2), theta=common, fill='toself', name=b2))
+                fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Overlap")
+                st.plotly_chart(fig, use_container_width=True)
 
 # === TAB 5: TRENDS ===
 with tab_trends:
-    view = st.radio("View", ["Monthly (MoM)", "Weekly (WoW)"], horizontal=True)
-    time_col = 'Month' if "Monthly" in view else 'Week'
+    view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True)
+    t_col = 'Month' if view == "Monthly" else 'Week'
+    
     if 'at' in df.columns:
-        trend = df.groupby([time_col, 'App_Name'])['score'].agg(['mean', 'count']).reset_index()
-        if view == "Weekly (WoW)": trend['Week'] = trend['Week'].astype(str)
+        trend = df.groupby([t_col, 'App_Name'])['score'].agg(['mean', 'count']).reset_index()
+        if view == "Weekly": trend['Week'] = trend['Week'].astype(str)
         
-        c1, c2 = st.columns(2)
-        with c1:
-            fig = px.line(trend, x=time_col, y='mean', color='App_Name', markers=True, title="CSAT Trend")
-            st.plotly_chart(dark_chart(fig), use_container_width=True)
-        with c2:
-            fig = px.bar(trend, x=time_col, y='count', color='App_Name', title="Volume Trend")
-            st.plotly_chart(dark_chart(fig), use_container_width=True)
-            
-        st.markdown("---")
-        
-        # 3. THEME EVOLUTION CHART (NEW FEATURE)
-        st.markdown("### 🧬 Theme Evolution (Drivers & Barriers)")
-        
-        c_te1, c_te2 = st.columns(2)
-        with c_te1:
-            evo_mode = st.radio("Category", ["Drivers (4-5★)", "Barriers (1-3★)"], horizontal=True)
-        
-        # Logic to get top themes for dropdown
-        if "Drivers" in evo_mode:
-            evo_df = df[df['score']>=4]
-        else:
-            evo_df = df[df['score']<=3]
-            
-        if not evo_df.empty and theme_cols:
-            top_evo_themes = evo_df[theme_cols].sum().sort_values(ascending=False).head(20).index.tolist()
-            with c_te2:
-                selected_evo_theme = st.selectbox("Select Theme to Track", top_evo_themes)
-            
-            # Calculate Trend for this theme per brand
-            # We want % of reviews in that period that mentioned the theme
-            evo_trend = evo_df.groupby([time_col, 'App_Name']).apply(
-                lambda x: (x[selected_evo_theme].sum() / len(x)) * 100
-            ).reset_index(name='Prevalence')
-            
-            if view == "Weekly (WoW)": evo_trend['Week'] = evo_trend['Week'].astype(str)
-            
-            fig_evo = px.line(
-                evo_trend, x=time_col, y='Prevalence', color='App_Name', markers=True,
-                title=f"Trend: '{selected_evo_theme}' (% of {evo_mode.split()[0]})",
-                labels={'Prevalence': '% Frequency'}
-            )
-            st.plotly_chart(dark_chart(fig_evo), use_container_width=True)
-        else:
-            st.info("Insufficient data to plot theme evolution.")
+        st.plotly_chart(dark_chart(px.line(trend, x=t_col, y='mean', color='App_Name', markers=True, title="CSAT")), use_container_width=True)
+        st.plotly_chart(dark_chart(px.bar(trend, x=t_col, y='count', color='App_Name', title="Volume")), use_container_width=True)
 
 # === TAB 6: DATA ===
 with tab_raw:
