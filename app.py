@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+from supabase import create_client, Client
 
 # ==========================================
 # 1. PAGE CONFIG & STRATEGIC STYLING
@@ -59,8 +60,6 @@ st.markdown("""
             border-radius: 4px;
             margin-bottom: 10px;
         }
-        .insight-card.positive { border-color: #10b981; }
-        .insight-card.negative { border-color: #ef4444; }
         
         /* TAB STYLING */
         .stTabs [data-baseweb="tab-list"] {
@@ -83,35 +82,62 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. INTELLIGENT DATA ENGINE
+# 2. LIVE SUPABASE DATA ENGINE
 # ==========================================
-@st.cache_data(ttl=600)
-def load_data(uploaded_file):
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-    else:
-        try:
-            from supabase import create_client
-            url = st.secrets["supabase"]["url"]
-            key = st.secrets["supabase"]["key"]
-            supabase = create_client(url, key)
-            response = supabase.table("reviews").select("*").execute()
-            df = pd.DataFrame(response.data)
-        except:
-            return pd.DataFrame()
+@st.cache_resource
+def init_connection():
+    try:
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+        return create_client(url, key)
+    except Exception as e:
+        st.error("❌ Supabase Connection Failed. Check .streamlit/secrets.toml")
+        st.stop()
 
-    if df.empty: return df
+supabase = init_connection()
 
-    # --- ROBUST CLEANING PIPELINE ---
+@st.cache_data(ttl=600)  # Refresh cache every 10 mins
+def load_data():
+    all_rows = []
+    start = 0
+    batch_size = 1000
+    
+    # Pagination Loop to fetch ALL data
+    while True:
+        response = supabase.table("reviews").select("*").range(start, start + batch_size - 1).execute()
+        rows = response.data
+        
+        if not rows:
+            break
+            
+        all_rows.extend(rows)
+        
+        if len(rows) < batch_size:
+            break
+            
+        start += batch_size
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+
+    # --- ROBUST DATA CLEANING ---
+    
     # 1. Date Handling
     if 'Review_Date' in df.columns:
+        # First try standard parsing
         df['at'] = pd.to_datetime(df['Review_Date'], errors='coerce')
-        # Fallback for mixed formats
+        
+        # Fallback for DD-MM-YYYY format if standard fails
         mask = df['at'].isna()
         if mask.any():
             df.loc[mask, 'at'] = pd.to_datetime(df.loc[mask, 'Review_Date'], format='%d-%m-%Y', errors='coerce')
         
+        # Drop rows where date is still invalid
         df = df.dropna(subset=['at'])
+        
+        # Create Period Columns
         df['Month'] = df['at'].dt.strftime('%Y-%m')
         df['Week'] = df['at'].dt.to_period('W').apply(lambda r: r.start_time)
 
@@ -119,7 +145,7 @@ def load_data(uploaded_file):
     if 'Rating' in df.columns:
         df['score'] = pd.to_numeric(df['Rating'], errors='coerce')
     
-    # 3. Text Metrcis
+    # 3. Text Metrics
     if 'Review_Text' in df.columns:
         df['char_count'] = df['Review_Text'].astype(str).str.len().fillna(0)
         df['review_depth'] = df['char_count'].apply(lambda x: 'Detailed (>30 chars)' if x >= 30 else 'Brief')
@@ -130,7 +156,7 @@ def load_data(uploaded_file):
     clean_net_map = {}
     
     for col in net_cols:
-        # Convert to boolean/binary (1 if present, 0 if NaN)
+        # Convert to binary (1 if present, 0 if NaN)
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         df[col] = df[col].apply(lambda x: 1 if x > 0 else 0)
         
@@ -139,7 +165,7 @@ def load_data(uploaded_file):
         clean_net_map[col] = clean_name
         df.rename(columns={col: clean_name}, inplace=True)
     
-    # Store the list of clean theme names for later use
+    # Store theme list in Session State
     st.session_state['theme_cols'] = list(clean_net_map.values())
 
     return df
@@ -155,12 +181,18 @@ def run_strategic_analysis(df, brand, theme_cols):
     # 1. Vitals
     vol = len(b_df)
     score = b_df['score'].mean()
-    nps_proxy = ((len(b_df[b_df['score']==5]) - len(b_df[b_df['score']<=3])) / vol) * 100
+    
+    # NPS Proxy Calculation
+    promoters = len(b_df[b_df['score']==5])
+    detractors = len(b_df[b_df['score']<=3])
+    nps_proxy = ((promoters - detractors) / vol) * 100
     
     # 2. Drivers (Positive Themes in 4-5 Star Reviews)
     pos_df = b_df[b_df['score'] >= 4]
     if not pos_df.empty and theme_cols:
-        drivers = pos_df[theme_cols].sum().sort_values(ascending=False).head(3)
+        # Sum theme columns only
+        valid_themes = [t for t in theme_cols if t in pos_df.columns]
+        drivers = pos_df[valid_themes].sum().sort_values(ascending=False).head(3)
         top_drivers = [(k, v, (v/len(pos_df)*100)) for k,v in drivers.items() if v > 0]
     else:
         top_drivers = []
@@ -168,7 +200,8 @@ def run_strategic_analysis(df, brand, theme_cols):
     # 3. Killers (Negative Themes in 1-3 Star Reviews)
     neg_df = b_df[b_df['score'] <= 3]
     if not neg_df.empty and theme_cols:
-        barriers = neg_df[theme_cols].sum().sort_values(ascending=False).head(3)
+        valid_themes = [t for t in theme_cols if t in neg_df.columns]
+        barriers = neg_df[valid_themes].sum().sort_values(ascending=False).head(3)
         top_barriers = [(k, v, (v/len(neg_df)*100)) for k,v in barriers.items() if v > 0]
     else:
         top_barriers = []
@@ -187,13 +220,16 @@ def run_strategic_analysis(df, brand, theme_cols):
 # ==========================================
 with st.sidebar:
     st.title("🎛️ Command Center")
-    uploaded_file = st.file_uploader("Data Source", type=['csv'])
     
-    df_raw = load_data(uploaded_file)
+    # Load Data Immediately on App Start
+    with st.spinner("Connecting to Live Database..."):
+        df_raw = load_data()
+    
     if df_raw.empty:
-        st.info("👋 Upload 'Dec Reviews - Raw_Reviews.csv' to begin.")
+        st.error("⚠️ No Data Found in Database.")
         st.stop()
 
+    st.success(f"🟢 Live: {len(df_raw):,} Rows")
     st.markdown("---")
     st.markdown("### 🔍 Global Filters")
     
@@ -219,11 +255,16 @@ with st.sidebar:
         sel_pl = []
 
 # --- FILTERING ---
-mask = (
-    (df_raw['at'].dt.date >= date_range[0]) & 
-    (df_raw['at'].dt.date <= date_range[1]) & 
-    (df_raw['App_Name'].isin(sel_brands))
-)
+# Ensure date_range has start and end
+if len(date_range) == 2:
+    mask = (
+        (df_raw['at'].dt.date >= date_range[0]) & 
+        (df_raw['at'].dt.date <= date_range[1]) & 
+        (df_raw['App_Name'].isin(sel_brands))
+    )
+else:
+    mask = df_raw['App_Name'].isin(sel_brands)
+
 if sel_prods:
     p_mask = pd.Series(False, index=df_raw.index)
     for c in prod_cols: p_mask |= df_raw[c].isin(sel_prods)
@@ -239,7 +280,8 @@ theme_cols = st.session_state.get('theme_cols', [])
 # ==========================================
 
 st.title("🦅 Strategic Intelligence Platform")
-st.markdown(f"**Analysis Scope:** {len(df):,} Reviews | {len(sel_brands)} Brands | {date_range[0]} to {date_range[1]}")
+if len(date_range) == 2:
+    st.markdown(f"**Analysis Scope:** {len(df):,} Reviews | {len(sel_brands)} Brands | {date_range[0]} to {date_range[1]}")
 
 # --- TABS ---
 tab_exec, tab_compare, tab_themes, tab_trends, tab_raw = st.tabs([
@@ -252,7 +294,6 @@ tab_exec, tab_compare, tab_themes, tab_trends, tab_raw = st.tabs([
 
 # === TAB 1: BOARDROOM SUMMARY ===
 with tab_exec:
-    
     # 1. HIGH LEVEL KPIS
     k1, k2, k3, k4 = st.columns(4)
     with k1:
@@ -264,22 +305,21 @@ with tab_exec:
         # NPS Proxy: % 5 Star - % 1-3 Star
         promoters = len(df[df['score']==5])
         detractors = len(df[df['score']<=3])
-        nps = ((promoters - detractors) / len(df)) * 100
+        nps = ((promoters - detractors) / len(df)) * 100 if len(df) > 0 else 0
         st.metric("Aggregated NPS", f"{nps:.0f}", delta="Proxy Score")
     with k4:
         # Risk Ratio: % of 1 Star reviews
-        risk = (len(df[df['score']==1]) / len(df)) * 100
+        risk = (len(df[df['score']==1]) / len(df)) * 100 if len(df) > 0 else 0
         st.metric("Critical Risk Ratio", f"{risk:.1f}%", delta="1-Star Volume", delta_color="inverse")
 
     st.markdown("---")
 
     # 2. BRAND HEALTH MATRIX
-    
     st.markdown("### 🏥 Brand Health Matrix")
     
     # Calculate metrics per brand
     brand_stats = df.groupby('App_Name').agg(
-        Volume=('Review_Id', 'count'),
+        Volume=('App_Name', 'count'),
         CSAT=('score', 'mean'),
         One_Star=('score', lambda x: (x==1).sum()),
         Five_Star=('score', lambda x: (x==5).sum())
@@ -329,19 +369,24 @@ with tab_exec:
                 
                 # DRIVERS
                 st.markdown("**🚀 Top Drivers (Why they stay):**")
-                for theme, count, pct in data['drivers']:
-                    st.markdown(f"- {theme} **({pct:.0f}%)**")
+                if data['drivers']:
+                    for theme, count, pct in data['drivers']:
+                        st.markdown(f"- {theme} **({pct:.0f}%)**")
+                else:
+                    st.markdown("- *Insufficient Positive Data*")
                 
                 # BARRIERS
                 st.markdown("**⚠️ Top Killers (Why they leave):**")
-                for theme, count, pct in data['barriers']:
-                    st.markdown(f"- {theme} **({pct:.0f}%)**")
+                if data['barriers']:
+                    for theme, count, pct in data['barriers']:
+                        st.markdown(f"- {theme} **({pct:.0f}%)**")
+                else:
+                    st.markdown("- *Insufficient Negative Data*")
                 
                 st.markdown("---")
 
 # === TAB 2: HEAD TO HEAD ===
 with tab_compare:
-    
     st.markdown("### ⚔️ Competitive Battleground")
     
     c1, c2 = st.columns(2)
@@ -373,14 +418,16 @@ with tab_compare:
         }
         st.dataframe(pd.DataFrame(comp_data).set_index("Metric"), use_container_width=True)
         
-        # Radar Chart Comparison (Conceptual)
-        # We create a normalized score for key themes if they exist
+        # Radar Chart Comparison
         if theme_cols:
-            common_themes = list(set([x[0] for x in data_a['drivers']] + [x[0] for x in data_b['drivers']]))[:5]
+            drivers_a = [x[0] for x in data_a['drivers']] if data_a['drivers'] else []
+            drivers_b = [x[0] for x in data_b['drivers']] if data_b['drivers'] else []
+            common_themes = list(set(drivers_a + drivers_b))[:6]
+            
             if common_themes:
-                # Calculate simple % mention for these themes for both brands
                 def get_theme_pct(b_name, t_list):
                     d = df[df['App_Name'] == b_name]
+                    if d.empty: return [0]*len(t_list)
                     return [(d[t].sum() / len(d) * 100) for t in t_list]
 
                 fig = go.Figure()
@@ -391,7 +438,6 @@ with tab_compare:
 
 # === TAB 3: THEMATIC DEEP DIVE ===
 with tab_themes:
-    
     st.markdown("### 🧠 Thematic Heatmap (Marketer's View)")
     st.info("Which themes are most prevalent across different brands?")
     
@@ -422,20 +468,20 @@ with tab_themes:
         
         st.markdown("### 🛑 Correlation Analysis: What drives 1-Star Ratings?")
         # Correlation between Themes and 1-Star Rating
-        # Create a binary 1-star column
         df['is_one_star'] = (df['score'] == 1).astype(int)
         corrs = {}
         for t in theme_cols:
             if df[t].sum() > 5: # Only consider relevant themes
                 corrs[t] = df['is_one_star'].corr(df[t])
         
-        corr_df = pd.DataFrame(list(corrs.items()), columns=['Theme', 'Correlation'])
-        corr_df = corr_df.sort_values('Correlation', ascending=False).head(10)
-        
-        fig_corr = px.bar(corr_df, x='Correlation', y='Theme', orientation='h', 
-                          title="Top Themes Correlated with 1-Star Ratings", color='Correlation', color_continuous_scale='Reds')
-        fig_corr.update_layout(template="plotly_dark", yaxis={'categoryorder':'total ascending'})
-        st.plotly_chart(fig_corr, use_container_width=True)
+        if corrs:
+            corr_df = pd.DataFrame(list(corrs.items()), columns=['Theme', 'Correlation'])
+            corr_df = corr_df.sort_values('Correlation', ascending=False).head(10)
+            
+            fig_corr = px.bar(corr_df, x='Correlation', y='Theme', orientation='h', 
+                              title="Top Themes Correlated with 1-Star Ratings", color='Correlation', color_continuous_scale='Reds')
+            fig_corr.update_layout(template="plotly_dark", yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig_corr, use_container_width=True)
 
 # === TAB 4: MARKET TRENDS ===
 with tab_trends:
@@ -443,7 +489,7 @@ with tab_trends:
     
     if 'Month' in df.columns:
         trend_df = df.groupby(['Month', 'App_Name']).agg(
-            Volume=('Review_Id', 'count'),
+            Volume=('score', 'count'),
             Rating=('score', 'mean')
         ).reset_index()
         
@@ -463,7 +509,6 @@ with tab_trends:
 with tab_raw:
     st.markdown("### 🔍 Data Explorer")
     
-    # Search
     q = st.text_input("Deep Search (Review Text)", placeholder="e.g. 'fraud', 'hidden charges'...")
     
     f_df = df.copy()
@@ -471,11 +516,12 @@ with tab_raw:
         f_df = f_df[f_df['Review_Text'].astype(str).str.contains(q, case=False, na=False)]
     
     st.dataframe(
-        f_df[['Review_Date', 'App_Name', 'score', 'Review_Text', 'Sentiment']],
+        f_df[['at', 'App_Name', 'score', 'Review_Text', 'Sentiment']],
         use_container_width=True,
         height=600,
         column_config={
             "score": st.column_config.NumberColumn("Rating", format="%d ⭐"),
             "Review_Text": st.column_config.TextColumn("Feedback", width="large"),
+            "at": "Date"
         }
     )
