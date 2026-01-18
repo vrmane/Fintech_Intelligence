@@ -4,12 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
-import requests
-import time
-from collections import Counter
-import re
 from supabase import create_client, Client
-from streamlit_lottie import st_lottie
 
 # ==========================================
 # 1. PAGE CONFIG & STRATEGIC STYLING
@@ -44,22 +39,13 @@ st.markdown("""
             transform: translateY(-2px);
         }
         
-        /* AI INSIGHT BOXES */
-        .ai-card {
-            background-color: rgba(30, 41, 59, 0.5);
-            border: 1px solid #334155;
-            border-left: 4px solid #38bdf8;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
+        /* AI INSIGHT BOX */
         .ai-insight-box {
             background: rgba(16, 185, 129, 0.05);
             border: 1px solid #10b981;
             border-left: 5px solid #10b981;
             padding: 20px;
             border-radius: 8px;
-            margin-top: 30px;
             margin-bottom: 25px;
         }
         .ai-header { font-weight: bold; color: #10b981; font-size: 1.1em; margin-bottom: 5px; }
@@ -82,36 +68,11 @@ st.markdown("""
             color: #38bdf8;
             border: 1px solid #38bdf8;
         }
-        
-        /* DATAFRAME */
-        .stDataFrame { border: 1px solid #334155; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. HELPER FUNCTIONS (LOADER & TEXT)
-# ==========================================
-def load_lottieurl(url: str):
-    try:
-        r = requests.get(url)
-        return r.json() if r.status_code == 200 else None
-    except:
-        return None
-
-def get_top_words(text_series, top_n=20):
-    # Simple stop words list
-    stop_words = set(['the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'for', 'i', 'this', 'my', 'app', 'loan', 'money', 'very', 'good', 'bad', 'worst', 'best', 'application', 'not', 'but', 'on', 'with', 'are', 'was', 'have', 'be', 'so', 'me', 'you'])
-    
-    text = ' '.join(text_series.dropna().astype(str).tolist()).lower()
-    # Remove punctuation/numbers
-    text = re.sub(r'[^a-z\s]', '', text)
-    words = [w for w in text.split() if w not in stop_words and len(w) > 2]
-    
-    counter = Counter(words)
-    return pd.DataFrame(counter.most_common(top_n), columns=['Word', 'Count'])
-
-# ==========================================
-# 3. DATA ENGINE (SUPABASE)
+# 2. LIVE SUPABASE DATA ENGINE
 # ==========================================
 @st.cache_resource
 def init_connection():
@@ -125,7 +86,7 @@ def init_connection():
 
 supabase = init_connection()
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600)  # Refresh cache every 10 mins
 def load_data():
     all_rows = []
     start = 0
@@ -175,36 +136,7 @@ def load_data():
     return df
 
 # ==========================================
-# 4. INITIAL LOADING SCREEN (INTERACTIVE)
-# ==========================================
-if 'data_loaded' not in st.session_state:
-    loader = st.empty()
-    with loader.container():
-        # Sci-Fi Loader
-        lottie_json = load_lottieurl("https://lottie.host/9e5c4644-841b-43c3-982d-19597143c690/w5h8o4t9zD.json") 
-        c1, c2, c3 = st.columns([1, 2, 1])
-        with c2:
-            if lottie_json: st_lottie(lottie_json, height=300, key="loader")
-            st.markdown("<h3 style='text-align:center; color:#38bdf8;'>Establishing Secure Connection...</h3>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align:center; color:#94a3b8;'>Fetching encrypted intelligence from Supabase node.</p>", unsafe_allow_html=True)
-    
-    # Load Data
-    df_raw = load_data()
-    st.session_state['df_raw'] = df_raw
-    st.session_state['data_loaded'] = True
-    
-    # Clear Loader
-    time.sleep(1) # Visual polish
-    loader.empty()
-else:
-    df_raw = st.session_state['df_raw']
-
-if df_raw.empty:
-    st.error("Connection Successful but No Data Found.")
-    st.stop()
-
-# ==========================================
-# 5. ANALYTICS LOGIC
+# 3. ANALYTICS LOGIC
 # ==========================================
 def dark_chart(fig):
     fig.update_layout(
@@ -267,7 +199,7 @@ def get_brand_insights(df, brand, theme_cols):
     brand_avg = b_df['score'].mean()
     diff = brand_avg - cohort_avg
     pos_text = "outperforming" if diff > 0 else "lagging behind"
-    insights.append(f"**Market Position:** {brand} is <span class='highlight-neu'>{pos_text}</span> the cohort average by **{abs(diff):.2f} stars**.")
+    insights.append(f"**Position:** {pos_text} market by **{abs(diff):.2f} ⭐**")
     
     pos_df = b_df[b_df['score'] >= 4]
     if not pos_df.empty and theme_cols:
@@ -275,7 +207,7 @@ def get_brand_insights(df, brand, theme_cols):
         if valid:
             top_d = pos_df[valid].sum().idxmax()
             pct = (pos_df[top_d].sum() / len(pos_df)) * 100
-            insights.append(f"**Growth Engine:** Positive sentiment is anchored on <span class='highlight-pos'>'{top_d}'</span>, appearing in **{pct:.1f}%** of 4-5★ reviews.")
+            insights.append(f"**Driver:** <span style='color:#4ade80'>{top_d}</span> (**{pct:.0f}%** of positive)")
             
     neg_df = b_df[b_df['score'] <= 3]
     if not neg_df.empty and theme_cols:
@@ -283,14 +215,11 @@ def get_brand_insights(df, brand, theme_cols):
         if valid:
             top_b = neg_df[valid].sum().idxmax()
             pct = (neg_df[top_b].sum() / len(neg_df)) * 100
-            insights.append(f"**Critical Risk:** The dominant friction point is <span class='highlight-neg'>'{top_b}'</span>, flagged in **{pct:.1f}%** of complaints.")
-    
-    share = (len(b_df) / len(df)) * 100
-    insights.append(f"**Voice Share:** Commands **{share:.1f}%** of the filtered review volume.")
-    
+            insights.append(f"**Risk:** <span style='color:#f87171'>{top_b}</span> (**{pct:.0f}%** of negative)")
+            
     return insights
 
-def generate_global_summary(df, theme_cols, current_filters):
+def generate_ai_insight(df, theme_cols, current_filters):
     if df.empty: return "No data available."
     
     avg_rating = df['score'].mean()
@@ -318,26 +247,33 @@ def generate_global_summary(df, theme_cols, current_filters):
     
     html = f"""
     <div class='ai-insight-box'>
-        <div class='ai-header'>🤖 AI Analyst: Global Strategic Brief</div>
+        <div class='ai-header'>🤖 AI Analyst: Live Strategic Brief</div>
         <div class='ai-text'>
             • <b>Context ({filter_text}):</b> Analyzing <b>{vol:,}</b> reviews. The category sentiment is <b>{avg_rating:.2f} ⭐</b>.<br>
             • <b>Performance:</b> <b>{leader}</b> is currently outperforming, while <b>{trailer}</b> trails in satisfaction.<br>
             • <b>Key Drivers:</b> Positive sentiment is heavily driven by <b>'{top_driver}'</b>.<br>
-            • <b>Critical Risks:</b> The most dominant complaint (Barrier) is <b>'{top_barrier}'</b>.<br>
-            • <b>Recommendation:</b> If <b>{top_barrier}</b> relates to product flow, prioritize UI/UX fixes immediately.
+            • <b>Critical Risks:</b> The most dominant complaint (Barrier) is <b>'{top_barrier}'</b>.
         </div>
     </div>
     """
     return html
 
 # ==========================================
-# 6. SIDEBAR & FILTERS
+# 4. SIDEBAR & FILTERS
 # ==========================================
 with st.sidebar:
     st.title("🎛️ Command Center")
+    with st.spinner("Connecting..."):
+        df_raw = load_data()
+    
+    if df_raw.empty:
+        st.error("No Data.")
+        st.stop()
+
     st.success(f"🟢 Live: {len(df_raw):,} Rows")
     st.markdown("---")
     
+    # FILTERS
     min_d, max_d = df_raw['at'].min().date(), df_raw['at'].max().date()
     date_range = st.date_input("Period", [min_d, max_d], min_value=min_d, max_value=max_d)
     
@@ -350,7 +286,7 @@ with st.sidebar:
     st.markdown("### 📝 Review Depth")
     len_filter = st.radio(
         "Character Count", 
-        ["All Reviews", "Brief (<=29)", "Detailed (>=30)"],
+        ["All Reviews", "Brief (<=29 chars)", "Detailed (>=30 chars)"],
         index=0
     )
     
@@ -376,8 +312,10 @@ else:
 mask &= df_raw['App_Name'].isin(sel_brands)
 mask &= df_raw['score'].isin(sel_ratings)
 
-if len_filter == "Brief (<=29)": mask &= (df_raw['length_bucket'] == 'Brief (<=29 chars)')
-elif len_filter == "Detailed (>=30)": mask &= (df_raw['length_bucket'] == 'Detailed (>=30 chars)')
+if len_filter == "Brief (<=29 chars)":
+    mask &= (df_raw['length_bucket'] == 'Brief (<=29 chars)')
+elif len_filter == "Detailed (>=30 chars)":
+    mask &= (df_raw['length_bucket'] == 'Detailed (>=30 chars)')
 
 if sel_prods:
     p_mask = pd.Series(False, index=df_raw.index)
@@ -391,13 +329,17 @@ df = df_raw[mask].copy()
 theme_cols = st.session_state.get('theme_cols', [])
 
 # ==========================================
-# 7. DASHBOARD LAYOUT
+# 5. DASHBOARD LAYOUT
 # ==========================================
 
 st.title("🦅 Strategic Intelligence Platform")
 
-tab_ai, tab_exec, tab_drivers, tab_compare, tab_trends, tab_text, tab_raw = st.tabs([
-    "🤖 AI Analyst", "📊 Boardroom", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📈 Trends", "🔡 Text Analytics", "🔍 Data"
+# Top Level AI Summary
+filter_desc = f"{len_filter}, {len(sel_brands)} Brands"
+st.markdown(generate_ai_insight(df, theme_cols, filter_desc), unsafe_allow_html=True)
+
+tab_ai, tab_exec, tab_drivers, tab_compare, tab_trends, tab_raw = st.tabs([
+    "🤖 AI Analyst", "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📈 Trends", "🔍 Data"
 ])
 
 # === TAB 1: AI ANALYST ===
@@ -413,25 +355,21 @@ with tab_ai:
                 {"".join([f'<div style="margin-bottom:5px;">✦ {txt}</div>' for txt in insights])}
             </div>
             """, unsafe_allow_html=True)
-            
-    # GLOBAL SUMMARY AT BOTTOM
-    filter_desc = f"{len_filter}, {len(sel_brands)} Brands"
-    st.markdown(generate_global_summary(df, theme_cols, filter_desc), unsafe_allow_html=True)
 
-# === TAB 2: BOARDROOM ===
+# === TAB 2: SUMMARY ===
 with tab_exec:
     k1, k2, k3, k4 = st.columns(4)
     with k1: st.metric("Total Volume", f"{len(df):,}")
     with k2: st.metric("Avg Rating", f"{df['score'].mean():.2f} ⭐")
-    
-    prom = len(df[df['score']==5])
-    det = len(df[df['score']<=3])
-    nps = ((prom - det) / len(df) * 100) if len(df) > 0 else 0
-    with k3: st.metric("NPS Proxy", f"{nps:.0f}")
-    
-    risk = (len(df[df['score']==1]) / len(df) * 100) if len(df) > 0 else 0
-    with k4: st.metric("Critical Risk", f"{risk:.1f}%", delta="1-Star %", delta_color="inverse")
-    
+    with k3:
+        prom = len(df[df['score']==5])
+        det = len(df[df['score']<=3])
+        nps = ((prom - det) / len(df)) * 100 if len(df)>0 else 0
+        st.metric("NPS Proxy", f"{nps:.0f}")
+    with k4:
+        risk = (len(df[df['score']==1]) / len(df)) * 100 if len(df)>0 else 0
+        st.metric("Critical Risk", f"{risk:.1f}%", delta="1-Star %", delta_color="inverse")
+
     st.markdown("---")
     
     bs = df.groupby('App_Name').agg(
@@ -445,14 +383,15 @@ with tab_exec:
     fig.update_traces(textposition='top center')
     st.plotly_chart(dark_chart(fig), use_container_width=True)
 
-# === TAB 3: DRIVERS & BARRIERS ===
+# === TAB 3: DRIVERS & BARRIERS (UPDATED) ===
 with tab_drivers:
     st.markdown("### 🚦 Strategic Drivers & Barriers")
     
+    # 1. CROSS-BRAND HEATMAPS
+    c_h1, c_h2 = st.columns(2)
     pos_bases = df[df['score']>=4].groupby('App_Name').size()
     neg_bases = df[df['score']<=3].groupby('App_Name').size()
     
-    c_h1, c_h2 = st.columns(2)
     with c_h1:
         st.markdown("**🚀 Drivers (Positive Theme Intensity)**")
         if not pos_bases.empty and theme_cols:
@@ -474,14 +413,20 @@ with tab_drivers:
             st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds'), use_container_width=True)
 
     st.markdown("---")
+    
+    # 2. THEME EVOLUTION (MOVED HERE & UPGRADED)
     st.markdown("### 🧬 Theme Evolution (Multi-Theme Comparison)")
     
-    evo_type = st.radio("Trend Category", ["Drivers (Positive)", "Barriers (Negative)"], horizontal=True, key="evo_type")
-    trend_src = df[df['score'] >= 4] if "Positive" in evo_type else df[df['score'] <= 3]
+    evo_type = st.radio("Trend Category", ["Drivers (Positive)", "Barriers (Negative)"], horizontal=True, key="evo_type_new")
+    
+    if "Positive" in evo_type:
+        trend_src = df[df['score'] >= 4]
+    else:
+        trend_src = df[df['score'] <= 3]
 
     if not trend_src.empty and theme_cols:
         top_opts = trend_src[theme_cols].sum().sort_values(ascending=False).head(20).index.tolist()
-        sel_themes = st.multiselect("Compare Themes (Aggregated)", top_opts, default=top_opts[:3])
+        sel_themes = st.multiselect("Compare Themes (Aggregated across selected brands)", top_opts, default=top_opts[:3])
         
         if sel_themes:
             t_view = st.radio("Time Grain", ["Monthly", "Weekly"], horizontal=True, key="evo_time")
@@ -489,6 +434,7 @@ with tab_drivers:
             
             trend_data = []
             grouped = trend_src.groupby(t_col)
+            
             for t_val, group in grouped:
                 base_vol = len(group)
                 if base_vol == 0: continue
@@ -502,8 +448,12 @@ with tab_drivers:
                 plot_df = pd.DataFrame(trend_data).sort_values(t_col)
                 fig_evo = px.line(plot_df, x=t_col, y="Prevalence", color="Theme", markers=True, title=f"Evolution of Selected {evo_type}", labels={"Prevalence": "% of Reviews"})
                 st.plotly_chart(dark_chart(fig_evo), use_container_width=True)
-
+            else:
+                st.info("No trend data available.")
+    
     st.markdown("---")
+
+    # 3. CROSS-BRAND MOMENTUM
     st.markdown("#### 📈 Theme Momentum (Growth Matrix)")
     c_t1, c_t2 = st.columns(2)
     
@@ -579,7 +529,7 @@ with tab_compare:
             s = d['score'].mean()
             n = ((len(d[d['score']==5]) - len(d[d['score']<=3]))/v)*100
             return [f"{s:.2f}", f"{n:.0f}", f"{v:,}"]
-            
+        
         comp = pd.DataFrame({"Metric": ["CSAT", "NPS", "Vol"], b1: get_stats(b1), b2: get_stats(b2)}).set_index("Metric")
         st.dataframe(comp, use_container_width=True)
         
@@ -587,10 +537,12 @@ with tab_compare:
             d1 = df[(df['App_Name']==b1) & (df['score']>=4)][theme_cols].sum().nlargest(5).index.tolist()
             d2 = df[(df['App_Name']==b2) & (df['score']>=4)][theme_cols].sum().nlargest(5).index.tolist()
             common = list(set(d1 + d2))
+            
             if common:
                 def gp(b):
                     d = df[df['App_Name']==b]
                     return [(d[t].sum()/len(d)*100) if not d.empty else 0 for t in common]
+                
                 fig = go.Figure()
                 fig.add_trace(go.Scatterpolar(r=gp(b1), theta=common, fill='toself', name=b1))
                 fig.add_trace(go.Scatterpolar(r=gp(b2), theta=common, fill='toself', name=b2))
@@ -601,6 +553,7 @@ with tab_compare:
 with tab_trends:
     view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True)
     t_col = 'Month' if view == "Monthly" else 'Week'
+    
     if 'at' in df.columns:
         trend = df.groupby([t_col, 'App_Name'])['score'].agg(['mean', 'count']).reset_index()
         if view == "Weekly": trend['Week'] = trend['Week'].astype(str)
@@ -608,33 +561,6 @@ with tab_trends:
         st.plotly_chart(dark_chart(px.line(trend, x=t_col, y='mean', color='App_Name', markers=True, title="CSAT")), use_container_width=True)
         st.plotly_chart(dark_chart(px.bar(trend, x=t_col, y='count', color='App_Name', title="Volume")), use_container_width=True)
 
-# === TAB 6: TEXT ANALYTICS (NEW) ===
-with tab_text:
-    st.markdown("### 🔡 Deep Text Analytics")
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.markdown("**Word Frequency (Top 20)**")
-        txt_type = st.radio("Sentiment Source", ["Positive (4-5★)", "Negative (1-3★)"], horizontal=True)
-        if "Positive" in txt_type:
-            txt_df = df[df['score']>=4]
-        else:
-            txt_df = df[df['score']<=3]
-            
-        if not txt_df.empty:
-            words_df = get_top_words(txt_df['Review_Text'])
-            st.dataframe(words_df, height=300, use_container_width=True)
-            
-            # Simple Bar
-            fig = px.bar(words_df, x='Count', y='Word', orientation='h', title=f"Top Words in {txt_type}")
-            fig.update_layout(yaxis={'categoryorder':'total ascending'})
-            st.plotly_chart(dark_chart(fig), use_container_width=True)
-    
-    with c2:
-        st.markdown("**Review Length Distribution**")
-        fig = px.histogram(df, x='char_count', color='App_Name', nbins=50, title="Character Count Distribution")
-        st.plotly_chart(dark_chart(fig), use_container_width=True)
-
-# === TAB 7: DATA ===
+# === TAB 6: DATA ===
 with tab_raw:
     st.dataframe(df[['at', 'App_Name', 'score', 'Review_Text', 'length_bucket']], use_container_width=True)
