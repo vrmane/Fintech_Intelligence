@@ -205,7 +205,7 @@ if 'data_loaded' not in st.session_state:
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
             if lottie_json: st_lottie(lottie_json, height=300, key="loader")
-            st.markdown("<h3 style='text-align:center; color:#38bdf8;'>Establishing Secure Connection...</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='text-align:center; color:#38bdf8;'>Loading please wait...</h3>", unsafe_allow_html=True)
     
     df_raw = load_data()
     st.session_state['df_raw'] = df_raw
@@ -373,7 +373,7 @@ theme_cols = st.session_state.get('theme_cols', [])
 # 7. DASHBOARD LAYOUT
 # ==========================================
 
-st.title("🦅 Strategic Intelligence Platform")
+st.title("🦅 Reviews Platform")
 
 tab_exec, tab_drivers, tab_compare, tab_trends, tab_text, tab_raw, tab_ai = st.tabs([
     "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📈 Trends", "🔡 Text Analytics", "🔍 Data", "🤖 AI Analyst"
@@ -594,3 +594,4 @@ with tab_ai:
             
     filter_desc = f"{len_filter}, {len(sel_brands)} Brands"
     st.markdown(generate_global_summary(df, theme_cols, filter_desc), unsafe_allow_html=True)
+
