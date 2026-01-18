@@ -270,7 +270,7 @@ with st.sidebar:
         st.error("No Data.")
         st.stop()
 
-    st.success(f"🟢 Live: {len(df_raw):,} Rows")
+    st.success(f"🟢 Live: {len(df_raw):,} Reviews")
     st.markdown("---")
     
     # FILTERS
@@ -564,5 +564,6 @@ with tab_trends:
 # === TAB 6: DATA ===
 with tab_raw:
     st.dataframe(df[['at', 'App_Name', 'score', 'Review_Text', 'length_bucket']], use_container_width=True)
+
 
 
