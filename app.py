@@ -168,14 +168,6 @@ def calculate_trend_change(df, metric_col, group_col, time_col, target_group):
     last_period = periods[-1]
     prev_period = periods[-2]
     
-    # Get metric value for target group in last vs prev
-    def get_val(p):
-        d = df_sorted[df_sorted[time_col] == p]
-        return d[metric_col].sum() if metric_col in d.columns else len(d)
-
-    # For Themes, we need to filter first? No, df passed here is already filtered or aggregated?
-    # Let's assume df is the raw data with the theme column (0/1)
-    
     val_last = df_sorted[df_sorted[time_col] == last_period][group_col].sum()
     val_prev = df_sorted[df_sorted[time_col] == prev_period][group_col].sum()
     
@@ -188,8 +180,7 @@ def calculate_trend_change(df, metric_col, group_col, time_col, target_group):
     share_last = val_last / base_last
     share_prev = val_prev / base_prev
     
-    # Return percentage point change or relative growth? 
-    # Relative growth of share is standard.
+    # Return relative growth of share
     if share_prev == 0: return 0.0
     return ((share_last - share_prev) / share_prev) * 100
 
@@ -268,7 +259,7 @@ def run_strategic_analysis(df, brand, theme_cols):
 # ==========================================
 with st.sidebar:
     st.title("🎛️ Command Center")
-    with st.spinner("Syncing..."):
+    with st.spinner("Connecting..."):
         df_raw = load_data()
     
     if df_raw.empty:
@@ -301,18 +292,22 @@ with st.sidebar:
     if 'PL Status' in df_raw.columns:
         sel_pl = st.multiselect("PL Status", df_raw['PL Status'].dropna().unique())
     else: sel_pl = []
+    
+    # Sentiment Filter
+    if 'Sentiment' in df_raw.columns:
+        sentiment_opts = sorted(df_raw['Sentiment'].dropna().unique())
+        sel_sentiment = st.multiselect("Sentiment", sentiment_opts)
+    else:
+        sel_sentiment = []
 
-# --- FILTERING ---
+# --- APPLY FILTERING ---
 if len(date_range) == 2:
-    mask = (
-        (df_raw['at'].dt.date >= date_range[0]) & 
-        (df_raw['at'].dt.date <= date_range[1]) & 
-        (df_raw['App_Name'].isin(sel_brands))
-    )
+    mask = (df_raw['at'].dt.date >= date_range[0]) & (df_raw['at'].dt.date <= date_range[1])
 else:
-    mask = df_raw['App_Name'].isin(sel_brands)
+    mask = [True] * len(df_raw)
 
-# Apply Char Filter
+mask &= df_raw['App_Name'].isin(sel_brands)
+
 if len_filter == "Brief (<=29 chars)":
     mask &= (df_raw['length_bucket'] == 'Brief (<=29)')
 elif len_filter == "Detailed (>=30 chars)":
@@ -322,7 +317,10 @@ if sel_prods:
     p_mask = pd.Series(False, index=df_raw.index)
     for c in prod_cols: p_mask |= df_raw[c].isin(sel_prods)
     mask &= p_mask
+    
 if sel_pl: mask &= (df_raw['PL Status'].isin(sel_pl))
+
+if sel_sentiment: mask &= (df_raw['Sentiment'].isin(sel_sentiment))
 
 df = df_raw[mask].copy()
 theme_cols = st.session_state.get('theme_cols', [])
@@ -349,7 +347,7 @@ tab_exec, tab_drivers, tab_compare, tab_trends, tab_raw = st.tabs([
 with tab_exec:
     k1, k2, k3, k4 = st.columns(4)
     with k1: st.metric("Total Volume", f"{len(df):,}")
-    with k2: st.metric("Market CSAT", f"{df['score'].mean():.2f} ⭐")
+    with k2: st.metric("Avg Rating", f"{df['score'].mean():.2f} ⭐")
     with k3:
         prom = len(df[df['score']==5])
         det = len(df[df['score']<=3])
