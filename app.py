@@ -332,7 +332,7 @@ theme_cols = st.session_state.get('theme_cols', [])
 # 5. DASHBOARD LAYOUT
 # ==========================================
 
-st.title("🦅 Strategic Intelligence Platform")
+st.title("🦅 Reviews Dashboard")
 
 # Top Level AI Summary
 filter_desc = f"{len_filter}, {len(sel_brands)} Brands"
@@ -564,4 +564,5 @@ with tab_trends:
 # === TAB 6: DATA ===
 with tab_raw:
     st.dataframe(df[['at', 'App_Name', 'score', 'Review_Text', 'length_bucket']], use_container_width=True)
+
 
