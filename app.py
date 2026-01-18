@@ -1,5 +1,5 @@
 # ============================================================
-# FINTECH EXECUTIVE VoC INTELLIGENCE – SINGLE PAGE (FINAL)
+# FINTECH EXECUTIVE VoC INTELLIGENCE – SINGLE PAGE (FINAL FIX)
 # ============================================================
 
 import streamlit as st
@@ -48,7 +48,6 @@ def load_data():
     if df.empty:
         return df, []
 
-    # ---------- Normalisation ----------
     df['Review_Date'] = pd.to_datetime(df['Review_Date'], errors='coerce')
     df = df.dropna(subset=['Review_Date'])
 
@@ -155,38 +154,37 @@ st.plotly_chart(
 )
 
 # ============================================================
-# REVIEW CREDIBILITY (FIXED & SAFE)
+# REVIEW CREDIBILITY (FINAL FIX)
 # ============================================================
 st.subheader("📏 Review Credibility Signals")
 
 cred = (
     df.assign(
-        Short_Positive=lambda x: (
-            (x['length_bucket'] == "Short (≤29)") & (x['Rating'] >= 4)
-        ),
-        Long_Negative=lambda x: (
-            (x['length_bucket'] == "Detailed (30+)") & (x['Rating'] <= 2)
-        )
+        Short_Positive=((df['length_bucket'] == "Short (≤29)") & (df['Rating'] >= 4)),
+        Long_Negative=((df['length_bucket'] == "Detailed (30+)") & (df['Rating'] <= 2))
     )
     .groupby('App_Name')
-    .agg(
-        Avg_Chars=('char_count', 'mean'),
-        Short_Positive_%=('Short_Positive', 'mean'),
-        Long_Negative_%=('Long_Negative', 'mean')
-    )
+    .agg({
+        'char_count': 'mean',
+        'Short_Positive': 'mean',
+        'Long_Negative': 'mean'
+    })
     .reset_index()
 )
+
+cred.rename(columns={
+    'char_count': 'Avg_Chars',
+    'Short_Positive': 'Short_Positive_%',
+    'Long_Negative': 'Long_Negative_%'
+}, inplace=True)
 
 cred['Short_Positive_%'] *= 100
 cred['Long_Negative_%'] *= 100
 
-st.dataframe(
-    cred.sort_values('Avg_Chars', ascending=False),
-    use_container_width=True
-)
+st.dataframe(cred.sort_values('Avg_Chars', ascending=False), use_container_width=True)
 
 # ============================================================
-# DRIVERS & BARRIERS (NET LOGIC)
+# DRIVERS & BARRIERS
 # ============================================================
 def net_heat(sub_df, title, scale):
     if sub_df.empty or not net_cols:
@@ -194,21 +192,13 @@ def net_heat(sub_df, title, scale):
         return
 
     base = sub_df.groupby('App_Name').size()
-    mat = (
-        sub_df.groupby('App_Name')[net_cols]
-        .sum()
-        .T.div(base, axis=1) * 100
-    )
+    mat = sub_df.groupby('App_Name')[net_cols].sum().T.div(base, axis=1) * 100
     mat.index = mat.index.str.replace("[NET]", "", regex=False)
 
     st.subheader(title)
     st.plotly_chart(
-        px.imshow(
-            mat,
-            text_auto=".1f",
-            aspect="auto",
-            color_continuous_scale=scale
-        ),
+        px.imshow(mat, text_auto=".1f", aspect="auto",
+                  color_continuous_scale=scale),
         use_container_width=True
     )
 
@@ -222,7 +212,6 @@ st.markdown("---")
 st.subheader("🧠 Auto-Generated CEO Summary")
 
 market_avg = df['Rating'].mean()
-summaries = []
 
 for brand in df['App_Name'].unique():
     bdf = df[df['App_Name'] == brand]
@@ -236,28 +225,16 @@ for brand in df['App_Name'].unique():
 
     if net_cols:
         if not bdf[bdf['Rating'] >= 4].empty:
-            driver = (
-                bdf[bdf['Rating'] >= 4][net_cols]
-                .sum()
-                .idxmax()
-                .replace("[NET]", "")
-            )
+            driver = bdf[bdf['Rating'] >= 4][net_cols].sum().idxmax().replace("[NET]", "")
         if not bdf[bdf['Rating'] <= 2].empty:
-            barrier = (
-                bdf[bdf['Rating'] <= 2][net_cols]
-                .sum()
-                .idxmax()
-                .replace("[NET]", "")
-            )
+            barrier = bdf[bdf['Rating'] <= 2][net_cols].sum().idxmax().replace("[NET]", "")
 
-    summaries.append(
+    st.markdown(
         f"**{brand}** has an average rating of **{avg:.2f}**, "
         f"{'above' if avg > market_avg else 'below'} the market benchmark. "
-        f"Promoters account for **{prom:.1f}%** of feedback, while detractors stand at "
-        f"**{det:.1f}%**. Customers most frequently praise **{driver}**, whereas "
-        f"**{barrier}** emerges as the primary friction point. Strategic focus should "
-        f"prioritise amplifying proven strengths supported by detailed positive feedback, "
-        f"while urgently addressing detractor-driven issues to protect long-term brand equity."
+        f"Promoters account for **{prom:.1f}%**, while detractors stand at **{det:.1f}%**. "
+        f"Customers most frequently praise **{driver}**, whereas **{barrier}** "
+        f"is the dominant friction point. Leadership focus should amplify proven strengths "
+        f"validated by detailed positive feedback while urgently resolving detractor-led issues "
+        f"to sustain brand momentum."
     )
-
-st.markdown("\n\n".join(summaries))
