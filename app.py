@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
 import requests
 import time
@@ -46,10 +45,21 @@ st.markdown("""
             border-left: 5px solid #10b981;
             padding: 20px;
             border-radius: 8px;
+            margin-top: 30px;
             margin-bottom: 25px;
         }
-        h1, h2, h3, h4 { color: #f8fafc; font-family: 'Inter', sans-serif; }
-        hr { border-color: #334155; margin: 2em 0; }
+        .stTabs [data-baseweb="tab-list"] { gap: 20px; }
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            background-color: rgba(255, 255, 255, 0.02);
+            border-radius: 8px;
+            color: #94a3b8;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: rgba(56, 189, 248, 0.1);
+            color: #38bdf8;
+            border: 1px solid #38bdf8;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -63,16 +73,32 @@ def load_lottieurl(url: str):
     except:
         return None
 
-def get_top_words_pct(text_series, total_count, top_n=20):
-    stop_words = set(['the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'for', 'i', 'this', 'my', 'app', 'loan', 'money', 'very', 'good', 'bad', 'worst', 'best', 'application', 'not', 'but', 'on', 'with', 'are', 'was', 'have', 'be', 'so', 'me', 'you', 'please', 'give'])
-    text = ' '.join(text_series.dropna().astype(str).tolist()).lower()
-    text = re.sub(r'[^a-z\s]', '', text)
-    words = [w for w in text.split() if w not in stop_words and len(w) > 2]
-    counter = Counter(words)
+def get_top_ngrams_pct(text_series, total_count, n=1, top_k=20):
+    """
+    Generates top N-grams (1=Unigram, 2=Bigram, 3=Trigram)
+    """
+    stop_words = set(['the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'for', 'i', 'this', 'my', 'app', 'loan', 'money', 'very', 'good', 'bad', 'worst', 'best', 'application', 'not', 'but', 'on', 'with', 'are', 'was', 'have', 'be', 'so', 'me', 'you', 'please', 'give', 'that', 'from'])
+    
+    # 1. Concatenate all text and clean
+    all_text = ' '.join(text_series.dropna().astype(str).tolist()).lower()
+    all_text = re.sub(r'[^a-z\s]', '', all_text)
+    
+    # 2. Tokenize
+    tokens = [w for w in all_text.split() if w not in stop_words and len(w) > 2]
+    
+    # 3. Generate N-grams
+    if n == 1:
+        grams = tokens
+    else:
+        grams = [' '.join(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+    
+    # 4. Count and Convert to %
+    counter = Counter(grams)
     data = []
-    for word, count in counter.most_common(top_n):
+    for gram, count in counter.most_common(top_k):
         pct = (count / total_count) * 100
-        data.append({'Word': word, 'Pct': pct, 'Count': count})
+        data.append({'Phrase': gram, 'Pct': pct, 'Count': count})
+        
     return pd.DataFrame(data)
 
 def calculate_delta(df, col, agg_func='count'):
@@ -317,27 +343,40 @@ st.title("🦅 Strategic Intelligence Platform")
 filter_desc = f"{len(sel_brands)} Brands"
 st.markdown(generate_global_summary(df, theme_cols, filter_desc), unsafe_allow_html=True)
 
-tab_exec, tab_drivers, tab_compare, tab_trends, tab_text, tab_ai = st.tabs([
-    "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
+tab_exec, tab_drivers, tab_compare, tab_trends, tab_text, tab_raw, tab_ai = st.tabs([
+    "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📈 Trends", "🔡 Text Analytics", "🔍 Data", "🤖 AI Analyst"
 ])
 
-# === TAB 1: BOARDROOM SUMMARY (UPGRADED) ===
+# === TAB 1: BOARDROOM ===
 with tab_exec:
-    # 1. Brand-Level KPI Pulse
-    st.markdown("#### 🏥 Brand Pulse (Live Breakdown)")
+    curr_vol, delta_vol = calculate_delta(df, 'score', 'count')
+    curr_csat, delta_csat = calculate_delta(df, 'score', 'mean')
     
-    # Calculate Metrics per Brand
+    k1, k2, k3, k4 = st.columns(4)
+    with k1: st.metric("Total Volume", f"{len(df):,}", delta=f"{delta_vol:.1f}% MoM")
+    with k2: st.metric("Avg Rating", f"{df['score'].mean():.2f} ⭐", delta=f"{delta_csat:.2f} pts MoM")
+    
+    prom = len(df[df['score']==5])
+    det = len(df[df['score']<=3])
+    nps = ((prom - det) / len(df) * 100) if len(df) > 0 else 0
+    with k3: st.metric("NPS Proxy", f"{nps:.0f}")
+    
+    risk = (len(df[df['score']==1]) / len(df) * 100) if len(df) > 0 else 0
+    with k4: st.metric("Critical Risk", f"{risk:.1f}%", delta="1-Star %", delta_color="inverse")
+    
+    st.markdown("---")
+    
+    # 1. Brand Pulse Table
+    st.markdown("#### 🏥 Brand Pulse (Live Breakdown)")
     kpi_df = df.groupby('App_Name').agg(
         Vol=('score', 'count'),
         CSAT=('score', 'mean'),
         Promoters=('score', lambda x: (x==5).sum()),
         Detractors=('score', lambda x: (x<=3).sum())
     ).reset_index()
-    
     kpi_df['NPS Proxy'] = ((kpi_df['Promoters'] - kpi_df['Detractors']) / kpi_df['Vol'] * 100).round(0)
     kpi_df['CSAT'] = kpi_df['CSAT'].round(2)
     
-    # Calculate MoM Deltas per Brand (Tricky but valuable)
     deltas = []
     for brand in kpi_df['App_Name']:
         b_df = df[df['App_Name'] == brand]
@@ -347,57 +386,38 @@ with tab_exec:
     
     delta_df = pd.DataFrame(deltas)
     final_kpi = kpi_df.merge(delta_df, on='App_Name')[['App_Name', 'Vol', 'Vol Delta', 'CSAT', 'CSAT Delta', 'NPS Proxy']]
-    
-    # Display as a styled dataframe for quick scanning
-    st.dataframe(
-        final_kpi.style.background_gradient(subset=['CSAT'], cmap='Greens').background_gradient(subset=['NPS Proxy'], cmap='RdYlGn'),
-        use_container_width=True,
-        hide_index=True
-    )
+    st.dataframe(final_kpi.style.background_gradient(subset=['CSAT'], cmap='Greens'), use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    
-    # 2. Strategic Visuals
     c1, c2 = st.columns(2)
-    
     with c1:
-        st.markdown("#### 🏆 Market Share (Volume)")
-        fig_don = px.pie(kpi_df, values='Vol', names='App_Name', hole=0.4, 
-                         title="Volume Share by Brand", hover_data=['Vol'])
+        st.markdown("#### 🏆 Market Share")
+        fig_don = px.pie(kpi_df, values='Vol', names='App_Name', hole=0.4, title="Volume Share by Brand")
         fig_don.update_traces(textposition='inside', textinfo='percent+label')
         st.plotly_chart(dark_chart(fig_don), use_container_width=True, key="exec_don")
-        
     with c2:
         st.markdown("#### 🎯 Quality vs. Quantity")
-        fig_scat = px.scatter(kpi_df, x="CSAT", y="NPS Proxy", size="Vol", color="App_Name", 
-                              text="App_Name", title="Strategic Positioning", 
-                              hover_data={'Vol':True, 'CSAT':':.2f', 'NPS Proxy':':.0f'})
+        fig_scat = px.scatter(kpi_df, x="CSAT", y="NPS Proxy", size="Vol", color="App_Name", text="App_Name", title="Strategic Positioning")
         fig_scat.update_traces(textposition='top center')
         st.plotly_chart(dark_chart(fig_scat), use_container_width=True, key="exec_scat")
 
-    # 3. Composition
     c3, c4 = st.columns(2)
     with c3:
         st.markdown("#### 📊 Sentiment Mix")
         sent_counts = df.groupby(['App_Name', 'Sentiment_Label']).size().reset_index(name='Count')
         tot = sent_counts.groupby('App_Name')['Count'].transform('sum')
         sent_counts['Pct'] = (sent_counts['Count'] / tot) * 100
-        
         fig_stack = px.bar(sent_counts, x="App_Name", y="Pct", color="Sentiment_Label", 
                            color_discrete_map={'Positive': '#10b981', 'Neutral': '#64748b', 'Negative': '#ef4444'},
-                           title="Sentiment Ratio (%)", text_auto='.0f',
-                           hover_data={'Count': True, 'Pct': ':.1f'})
+                           title="Sentiment Ratio (%)", text_auto='.0f')
         st.plotly_chart(dark_chart(fig_stack), use_container_width=True, key="exec_stack")
-        
     with c4:
         st.markdown("#### 📝 Engagement Depth")
         len_counts = df.groupby(['App_Name', 'length_bucket']).size().reset_index(name='Count')
         l_tot = len_counts.groupby('App_Name')['Count'].transform('sum')
         len_counts['Pct'] = (len_counts['Count'] / l_tot) * 100
-        
         fig_len = px.bar(len_counts, x="App_Name", y="Pct", color="length_bucket", barmode='group',
-                         title="Brief vs Detailed (%)", text_auto='.0f',
-                         hover_data={'Count': True, 'Pct': ':.1f'})
+                         title="Brief vs Detailed (%)", text_auto='.0f')
         st.plotly_chart(dark_chart(fig_len), use_container_width=True, key="exec_len")
 
 # === TAB 2: DRIVERS & BARRIERS ===
@@ -409,24 +429,24 @@ with tab_drivers:
     neg_bases = df[df['score']<=3].groupby('App_Name').size()
     
     with c_h1:
-        st.markdown("**🚀 Drivers (Positive Theme %)**")
+        st.markdown("**🚀 Drivers (%)**")
         if not pos_bases.empty and theme_cols:
             valid = [t for t in theme_cols if t in df.columns]
             p_data = df[df['score']>=4].groupby('App_Name')[valid].sum().T
             p_pct = p_data.div(pos_bases, axis=1) * 100
             p_pct['Avg'] = p_pct.mean(axis=1)
             p_pct = p_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,} Reviews"), use_container_width=True, key="db_pos")
+            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,}"), use_container_width=True, key="db_pos")
             
     with c_h2:
-        st.markdown("**🛑 Barriers (Negative Theme %)**")
+        st.markdown("**🛑 Barriers (%)**")
         if not neg_bases.empty and theme_cols:
             valid = [t for t in theme_cols if t in df.columns]
             n_data = df[df['score']<=3].groupby('App_Name')[valid].sum().T
             n_pct = n_data.div(neg_bases, axis=1) * 100
             n_pct['Avg'] = n_pct.mean(axis=1)
             n_pct = n_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,} Reviews"), use_container_width=True, key="db_neg")
+            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,}"), use_container_width=True, key="db_neg")
 
     st.markdown("---")
     st.markdown("### 🧬 Theme Evolution (Brand Comparison)")
@@ -454,13 +474,11 @@ with tab_drivers:
             if trend_data:
                 plot_df = pd.DataFrame(trend_data).sort_values(t_col)
                 fig_evo = px.line(plot_df, x=t_col, y="Prevalence", color="App_Name", markers=True, 
-                                  title=f"Evolution of '{sel_theme}' (%)", labels={"Prevalence": "% of Reviews"},
-                                  text="Prevalence", 
+                                  title=f"Evolution of '{sel_theme}' (%)", text="Prevalence", 
                                   hover_data={"Base": True, "Prevalence": ":.1f"})
                 fig_evo.update_traces(textposition="top center", texttemplate='%{text:.1f}')
                 st.plotly_chart(dark_chart(fig_evo), use_container_width=True, key="db_evo_chart")
 
-    # MOMENTUM
     c_t1, c_t2 = st.columns(2)
     with c_t1:
         st.markdown("#### 📅 MoM Growth %")
@@ -495,6 +513,7 @@ with tab_compare:
             d1 = df[(df['App_Name']==b1) & (df['score']>=4)][theme_cols].sum().nlargest(5).index.tolist()
             d2 = df[(df['App_Name']==b2) & (df['score']>=4)][theme_cols].sum().nlargest(5).index.tolist()
             common = list(set(d1 + d2))
+            
             if common:
                 def gp(b):
                     d = df[df['App_Name']==b]
@@ -538,16 +557,20 @@ with tab_text:
     st.markdown("### 🔡 Deep Text Analytics")
     c1, c2 = st.columns(2)
     with c1:
-        txt_brand = st.selectbox("Select Brand for Words", ["All"] + sel_brands, key="txt_brand")
+        txt_brand = st.selectbox("Select Brand", ["All"] + sel_brands, key="txt_brand")
+        n_gram = st.selectbox("Phrase Length", ["Unigram (1 Word)", "Bigram (2 Words)", "Trigram (3 Words)"], index=1)
         txt_type = st.radio("Sentiment", ["Positive (4-5★)", "Negative (1-3★)"], horizontal=True, key="txt_radio")
+        
         t_df = df if txt_brand == "All" else df[df['App_Name'] == txt_brand]
         t_df = t_df[t_df['score']>=4] if "Positive" in txt_type else t_df[t_df['score']<=3]
         
+        n_val = 1 if "Unigram" in n_gram else 2 if "Bigram" in n_gram else 3
+        
         if not t_df.empty:
             base = len(t_df)
-            words_df = get_top_words_pct(t_df['Review_Text'], base)
-            fig = px.bar(words_df, x='Pct', y='Word', orientation='h', 
-                         title=f"Top Words (Base: {base})", labels={'Pct':'% of Reviews'},
+            words_df = get_top_ngrams_pct(t_df['Review_Text'], base, n=n_val)
+            fig = px.bar(words_df, x='Pct', y='Phrase', orientation='h', 
+                         title=f"Top Phrases (Base: {base})", labels={'Pct':'% of Reviews'},
                          text='Pct', hover_data={'Count':True, 'Pct':':.1f'})
             fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
             fig.update_layout(yaxis={'categoryorder':'total ascending'})
@@ -556,7 +579,11 @@ with tab_text:
         fig = px.histogram(df, x='char_count', color='App_Name', nbins=50, title="Review Length Dist.")
         st.plotly_chart(dark_chart(fig), use_container_width=True, key="txt_hist")
 
-# === TAB 6: AI ANALYST ===
+# === TAB 6: DATA ===
+with tab_raw:
+    st.dataframe(df[['at', 'App_Name', 'score', 'Review_Text', 'length_bucket']], use_container_width=True)
+
+# === TAB 7: AI ANALYST ===
 with tab_ai:
     st.markdown("### 🤖 Brand Strategic Briefs")
     cols = st.columns(2)
