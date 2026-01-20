@@ -10,7 +10,8 @@ from collections import Counter
 import re
 from supabase import create_client, Client
 from streamlit_lottie import st_lottie
-from datetime import timedelta
+from datetime import timedelta, datetime
+import pytz
 
 # ==========================================
 # 1. PAGE CONFIG & STRATEGIC STYLING
@@ -48,6 +49,13 @@ st.markdown("""
             padding: 20px;
             border-radius: 8px;
             margin-bottom: 25px;
+        }
+        .timestamp-box {
+            font-size: 0.9em;
+            color: #94a3b8;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #334155;
+            padding-bottom: 10px;
         }
         hr { margin: 2em 0; border-color: #334155; }
         h1, h2, h3, h4 { color: #f8fafc; font-family: 'Inter', sans-serif; }
@@ -120,14 +128,31 @@ def load_data():
     if not all_rows: return pd.DataFrame()
     df = pd.DataFrame(all_rows)
 
+    # --- IST DATE HANDLING ---
+    ist = pytz.timezone('Asia/Kolkata')
+    
     if 'Review_Date' in df.columns:
+        # 1. Convert to Datetime (Coerce errors)
         df['at'] = pd.to_datetime(df['Review_Date'], errors='coerce')
+        
+        # 2. Localize/Convert to IST
+        # If date is naive (no timezone), assume UTC first then convert
+        if df['at'].dt.tz is None:
+            df['at'] = df['at'].dt.tz_localize('UTC').dt.tz_convert(ist)
+        else:
+            df['at'] = df['at'].dt.tz_convert(ist)
+            
         mask = df['at'].isna()
         if mask.any():
-            df.loc[mask, 'at'] = pd.to_datetime(df.loc[mask, 'Review_Date'], format='%d-%m-%Y', errors='coerce')
+            # Retry fallback format if needed
+            df.loc[mask, 'at'] = pd.to_datetime(df.loc[mask, 'Review_Date'], format='%d-%m-%Y', errors='coerce').dt.tz_localize('UTC').dt.tz_convert(ist)
+            
         df = df.dropna(subset=['at'])
+        
+        # 3. Create Time Columns based on IST
         df['Month'] = df['at'].dt.strftime('%Y-%m')
-        df['Week'] = df['at'].dt.to_period('W').apply(lambda r: r.start_time)
+        # ISO Week Number for standards
+        df['Week'] = df['at'].dt.strftime('%Y-W%V')
 
     if 'Rating' in df.columns:
         df['score'] = pd.to_numeric(df['Rating'], errors='coerce')
@@ -147,6 +172,8 @@ def load_data():
         df.rename(columns={col: clean_name}, inplace=True)
     
     st.session_state['theme_cols'] = list(clean_net_map.values())
+    st.session_state['last_fetched'] = datetime.now(ist).strftime("%d %b %Y, %I:%M %p IST")
+    
     return df
 
 # ==========================================
@@ -278,6 +305,7 @@ with st.sidebar:
     st.success(f"🟢 Live: {len(df_raw):,} Rows")
     st.markdown("---")
     
+    # Range is applied globally
     min_d, max_d = df_raw['at'].min().date(), df_raw['at'].max().date()
     date_range = st.date_input("Period", [min_d, max_d], min_value=min_d, max_value=max_d)
     
@@ -315,8 +343,9 @@ theme_cols = st.session_state.get('theme_cols', [])
 # ==========================================
 st.title("🦅 Strategic Intelligence Platform")
 
-filter_desc = f"{len(sel_brands)} Brands"
-st.markdown(generate_global_summary(df, theme_cols, filter_desc), unsafe_allow_html=True)
+# LAST FETCHED TIMESTAMP
+last_time = st.session_state.get('last_fetched', 'Just now')
+st.markdown(f"<div class='timestamp-box'>Data Last Fetched: {last_time} (IST)</div>", unsafe_allow_html=True)
 
 tab_exec, tab_drivers, tab_compare, tab_monthly, tab_trends, tab_text, tab_ai = st.tabs([
     "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Period-Over-Period Matrix", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
@@ -406,7 +435,7 @@ with tab_drivers:
             p_pct = p_data.div(pos_bases, axis=1) * 100
             p_pct['Avg'] = p_pct.mean(axis=1)
             p_pct = p_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,}"), use_container_width=True, key="db_pos")
+            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,} Reviews"), use_container_width=True, key="db_pos")
     with c_h2:
         st.markdown("**🛑 Barriers (%)**")
         if not neg_bases.empty and theme_cols:
@@ -415,7 +444,7 @@ with tab_drivers:
             n_pct = n_data.div(neg_bases, axis=1) * 100
             n_pct['Avg'] = n_pct.mean(axis=1)
             n_pct = n_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,}"), use_container_width=True, key="db_neg")
+            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,} Reviews"), use_container_width=True, key="db_neg")
 
     st.markdown("---")
     st.markdown("### 🧬 Theme Evolution (Brand Comparison)")
@@ -486,7 +515,7 @@ with tab_compare:
                 fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Overlap (%)")
                 st.plotly_chart(fig, use_container_width=True, key="h2h_radar")
 
-# === TAB 4: PERIOD MATRIX (TABLE WITH BASE ROW) ===
+# === TAB 4: PERIOD MATRIX (INTEGRATED BASE) ===
 with tab_monthly:
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
     
@@ -508,24 +537,17 @@ with tab_monthly:
         
     # Apply Lookback
     max_date = df['at'].max()
-    if time_lookback == "Last 7 Days":
-        start_date = max_date - timedelta(days=7)
-    elif time_lookback == "Last 30 Days":
-        start_date = max_date - timedelta(days=30)
-    elif time_lookback == "Last 90 Days":
-        start_date = max_date - timedelta(days=90)
-    elif time_lookback == "Last 6 Months":
-        start_date = max_date - timedelta(days=180)
-    elif time_lookback == "Last 12 Months":
-        start_date = max_date - timedelta(days=365)
-    else:
-        start_date = df['at'].min()
-        
+    if time_lookback == "Last 7 Days": start_date = max_date - timedelta(days=7)
+    elif time_lookback == "Last 30 Days": start_date = max_date - timedelta(days=30)
+    elif time_lookback == "Last 90 Days": start_date = max_date - timedelta(days=90)
+    elif time_lookback == "Last 6 Months": start_date = max_date - timedelta(days=180)
+    elif time_lookback == "Last 12 Months": start_date = max_date - timedelta(days=365)
+    else: start_date = df['at'].min()
     m_df = m_df[m_df['at'] >= start_date]
     
     # 3. Group by Time Grain
     if time_grain == "Week":
-        m_df['Period'] = m_df['at'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-W%U'))
+        m_df['Period'] = m_df['at'].dt.strftime('%Y-W%V') # ISO Week
     elif time_grain == "Month":
         m_df['Period'] = m_df['at'].dt.to_period('M').astype(str)
     elif time_grain == "Quarter":
@@ -535,72 +557,58 @@ with tab_monthly:
         
     # 4. Build Table
     if not m_df.empty and theme_cols:
-        # Get Sorted Periods
         periods = sorted(m_df['Period'].unique())
-        
-        # Calculate Base per Cell (Brand x Period)
         base_matrix = m_df.groupby(['Period', 'App_Name']).size().unstack(fill_value=0)
         
-        # Get Top Themes
         valid = [t for t in theme_cols if t in m_df.columns]
         top_m_themes = m_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
         
-        # Build Data for DataFrame
+        # Build Data
         data = []
         
-        # Build Base Row FIRST
+        # 1. Base Row
         base_row_data = {}
         for p in periods:
             for b in sel_brands:
                 if b not in base_matrix.columns: continue
                 val = base_matrix.loc[p, b]
-                base_row_data[(p, b)] = f"{val:,}" # Format as string with commas
+                base_row_data[(p, b)] = val # Raw int
         
-        # Add Base Row to data list
-        # We handle this by creating a special dataframe first
-        
+        # 2. Perc Rows
         for theme in top_m_themes:
             row = {}
             for p in periods:
                 for b in sel_brands:
-                    # Logic
                     if b not in base_matrix.columns: continue
                     mask = (m_df['Period'] == p) & (m_df['App_Name'] == b)
                     count = m_df[mask][theme].sum()
                     base = base_matrix.loc[p, b]
-                    
                     val = (count / base * 100) if base > 0 else 0
                     row[(p, b)] = val
             data.append(row)
             
         final_df = pd.DataFrame(data, index=top_m_themes)
-        # Create MultiIndex Columns
         final_df.columns = pd.MultiIndex.from_tuples(final_df.columns)
-        # Sort Columns
         final_df = final_df.sort_index(axis=1)
         
-        # Insert Base Row at the top
-        # Create a DF for the base row with same columns
+        # Insert Base Row
         base_row_df = pd.DataFrame([base_row_data], index=["Base (N)"])
-        # Align columns
-        base_row_df = base_row_df.reindex(columns=final_df.columns)
+        base_row_df.columns = pd.MultiIndex.from_tuples(base_row_df.columns)
+        base_row_df = base_row_df.reindex(columns=final_df.columns) # Align
         
-        # Concat: Base Row on top
-        # Note: Concatenating mixed types (str and float) converts everything to object/str
-        # So styling gradients won't work on the whole thing easily.
-        # Strategy: Display Base Row separately or use a hack.
-        # User requested: "add that below the brand name row". In Streamlit, this is index 0.
+        # Concatenate: Base + Data
+        combined_df = pd.concat([base_row_df, final_df])
         
-        # Let's display the Base Matrix as a styled row at the top
+        # Apply Styling
         st.markdown(f"**Top 20 {rep_type} by {time_grain}**")
-        
-        # We print the base row as a separate small dataframe to keep styling on main
-        st.caption("Base Counts (N) per Period:")
-        st.dataframe(base_row_df.style.set_properties(**{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}), use_container_width=True)
-        
-        # Main Data
-        st.dataframe(final_df.style.background_gradient(cmap=color_scale, axis=None).format("{:.1f}"), use_container_width=True)
-        
+        st.dataframe(
+            combined_df.style
+            .background_gradient(cmap=color_scale, subset=pd.IndexSlice[top_m_themes, :], axis=None) # Color only themes
+            .format("{:.1f}", subset=pd.IndexSlice[top_m_themes, :]) # Format themes as float
+            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :]) # Format base as int
+            .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
+            use_container_width=True
+        )
     else:
         st.info("No data for selected range.")
 
