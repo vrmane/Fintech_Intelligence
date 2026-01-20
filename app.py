@@ -71,6 +71,41 @@ st.markdown("""
         hr { margin: 2em 0; border-color: #334155; }
         h1, h2, h3, h4 { color: #f8fafc; font-family: 'Inter', sans-serif; }
         .stCaption { font-size: 0.9em; color: #94a3b8; font-style: italic; }
+        
+        /* NAVIGATION STABILIZATION CSS */
+        div[role="radiogroup"] > label > div:first-child { display: none !important; }
+        div[role="radiogroup"] {
+            background-color: #1e293b;
+            padding: 8px;
+            border-radius: 12px;
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        div[role="radiogroup"] label {
+            flex: 1;
+            text-align: center;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            transition: all 0.2s ease;
+            margin: 0 4px;
+            color: #94a3b8 !important;
+        }
+        div[role="radiogroup"] label:hover {
+            background-color: #334155;
+            color: #fff !important;
+        }
+        div[role="radiogroup"] label[data-checked="true"] {
+            background-color: #38bdf8 !important;
+            color: #0f172a !important;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        div[role="radiogroup"] label[data-checked="true"] p {
+            color: #0f172a !important;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -81,8 +116,7 @@ def load_lottieurl(url: str):
     try:
         r = requests.get(url)
         return r.json() if r.status_code == 200 else None
-    except:
-        return None
+    except: return None
 
 @st.cache_data(show_spinner=False)
 def get_top_words_pct(text_series, total_count, top_n=20):
@@ -127,7 +161,7 @@ def dark_chart(fig):
     return fig
 
 # ==========================================
-# 3. DATA ENGINE
+# 3. DATA ENGINE (BULLETPROOF LOADING)
 # ==========================================
 @st.cache_resource
 def init_connection():
@@ -155,6 +189,7 @@ def load_data():
 
     ist = pytz.timezone('Asia/Kolkata')
     
+    # 1. Date Parsing
     if 'Review_Date' in df.columns:
         df['at'] = pd.to_datetime(df['Review_Date'], errors='coerce')
         if df['at'].dt.tz is None:
@@ -165,10 +200,12 @@ def load_data():
         df['Month'] = df['at'].dt.strftime('%Y-%m')
         df['Week'] = df['at'].dt.strftime('%Y-W%V')
 
+    # 2. Score & Sentiment
     if 'Rating' in df.columns:
         df['score'] = pd.to_numeric(df['Rating'], errors='coerce')
         df['Sentiment_Label'] = pd.cut(df['score'], bins=[0, 2, 3, 5], labels=['Negative', 'Neutral', 'Positive'])
     
+    # 3. Text Processing
     if 'Review_Text' in df.columns:
         df['char_count'] = df['Review_Text'].astype(str).str.len().fillna(0).astype(np.int32)
         df['length_bucket'] = df['char_count'].apply(lambda x: 'Brief (<=29)' if x <= 29 else 'Detailed (>=30)').astype('category')
@@ -176,25 +213,42 @@ def load_data():
     for col in ['App_Name', 'Product_1', 'Sentiment']:
         if col in df.columns: df[col] = df[col].astype('category')
 
-    net_cols = [c for c in df.columns if str(c).startswith('[NET]')]
+    # 4. ROBUST THEME DETECTION (Fixes "No Data" bug)
+    # Strategy: Find any column with "NET" in name OR binary 0/1 content
+    potential_themes = []
     clean_net_map = {}
-    for col in net_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(np.int8)
-        clean_name = col.replace('[NET]', '').replace('[NET] ', '').strip()
-        clean_net_map[col] = clean_name
-        df.rename(columns={col: clean_name}, inplace=True)
     
+    for col in df.columns:
+        col_str = str(col).upper()
+        # Criteria 1: Name contains "NET"
+        if "NET" in col_str or col_str.startswith("["):
+            # Criteria 2: Must be numeric-ish (0s and 1s)
+            try:
+                # Force numeric conversion
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(np.int8)
+                # Check if values are mostly 0 or 1
+                unique_vals = df[col].unique()
+                if set(unique_vals).issubset({0, 1}):
+                    potential_themes.append(col)
+                    clean_name = str(col).replace('[NET]', '').replace('[NET] ', '').replace('NET', '').strip()
+                    clean_net_map[col] = clean_name
+                    df.rename(columns={col: clean_name}, inplace=True)
+            except:
+                continue
+
     st.session_state['theme_cols'] = list(clean_net_map.values())
     st.session_state['last_fetched'] = datetime.now(ist).strftime("%d %b %Y, %I:%M %p IST")
     gc.collect()
     return df
 
 # ==========================================
-# 4. DATA PROCESSING FUNCTIONS (ROBUST)
+# 4. ROBUST DATA PROCESSING FUNCTIONS
 # ==========================================
 def calculate_growth_matrix(df, theme_cols, time_col, brands):
+    if not theme_cols: return pd.DataFrame()
     valid_themes = [t for t in theme_cols if t in df.columns]
     if not valid_themes: return pd.DataFrame()
+    
     top_themes = df[valid_themes].sum().sort_values(ascending=False).head(10).index.tolist()
     matrix = {}
     for brand in brands:
@@ -277,7 +331,6 @@ def generate_global_summary(df, theme_cols, current_filters):
     return html
 
 def build_period_matrix(sub_df, theme_cols, sel_brands):
-    # Safety Check
     if not theme_cols: return None, None
     if sub_df.empty: return None, None
     
@@ -314,20 +367,16 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
         
     final_df = pd.DataFrame(data, index=top_themes)
     if final_df.empty: return None, None
-    
     final_df.columns = pd.MultiIndex.from_tuples(final_df.columns)
     final_df = final_df.sort_index(axis=1)
-    
     base_row_df = pd.DataFrame([base_row_data], index=["Base (N)"])
     base_row_df.columns = pd.MultiIndex.from_tuples(base_row_df.columns)
     base_row_df = base_row_df.reindex(columns=final_df.columns).fillna(0)
-    
     return pd.concat([base_row_df, final_df]), top_themes
 
 def build_brand_matrix(sub_df, theme_cols, sel_brands):
     if not theme_cols: return None, None
-    
-    if sub_df.empty:
+    if sub_df.empty: 
         base_counts = pd.Series(0, index=sel_brands)
         top_themes = []
     else:
@@ -337,7 +386,6 @@ def build_brand_matrix(sub_df, theme_cols, sel_brands):
             top_themes = sub_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
         else:
             top_themes = []
-            
     data = []
     for theme in top_themes:
         row = {}
@@ -348,41 +396,33 @@ def build_brand_matrix(sub_df, theme_cols, sel_brands):
                 row[brand] = (count / base) * 100
             else: row[brand] = 0
         data.append(row)
-        
     final_df = pd.DataFrame(data, index=top_themes)
     base_row_df = pd.DataFrame([base_counts.to_dict()], index=["Base (N)"])
-    
     return pd.concat([base_row_df, final_df]), top_themes
 
 def build_battleground(df, b1, b2, theme_cols):
     if not theme_cols: return None
     valid = [t for t in theme_cols if t in df.columns]
     if not valid: return None
-    
     df_b1 = df[df['App_Name'] == b1]
     df_b2 = df[df['App_Name'] == b2]
-    
     if df_b1.empty or df_b2.empty: return None
-    
     count_b1 = df_b1[valid].sum()
     count_b2 = df_b2[valid].sum()
     total_counts = count_b1 + count_b2
     top_themes = total_counts.sort_values(ascending=False).head(15).index.tolist()
-    
     data = []
     for t in top_themes:
         pct_1 = (count_b1[t] / len(df_b1) * 100) if len(df_b1) > 0 else 0
         pct_2 = (count_b2[t] / len(df_b2) * 100) if len(df_b2) > 0 else 0
         diff = pct_1 - pct_2 
         data.append({'Theme': t, 'Delta': diff, f'{b1} %': pct_1, f'{b2} %': pct_2})
-        
     return pd.DataFrame(data).sort_values('Delta')
 
 def build_aggregated_themes(sub_df, theme_cols):
     if sub_df.empty or not theme_cols: return pd.DataFrame()
     valid = [t for t in theme_cols if t in sub_df.columns]
     if not valid: return pd.DataFrame()
-    
     total_vol = len(sub_df)
     sums = sub_df[valid].sum().sort_values(ascending=False).head(10)
     df_agg = pd.DataFrame({'Theme': sums.index, 'Count': sums.values})
@@ -394,11 +434,9 @@ def build_brand_breakdown_matrix(sub_df, theme_cols, top_themes, brands):
         base_counts = {b: 0 for b in brands}
         data = [base_counts]
         return pd.DataFrame(data, index=["Base (N)"])
-        
     data = []
     base_counts = sub_df['App_Name'].value_counts().reindex(brands, fill_value=0)
     data.append({b: base_counts[b] for b in brands})
-    
     for theme in top_themes:
         row = {}
         for b in brands:
@@ -417,15 +455,13 @@ def build_brand_breakdown_matrix(sub_df, theme_cols, top_themes, brands):
 # === UPDATED DIAGNOSTIC FUNCTION ===
 def build_impact_matrix(df, theme_cols):
     if df.empty or not theme_cols: return None
-    
     valid = [t for t in theme_cols if t in df.columns]
     if not valid:
+        # Fallback check
         valid = [c for c in df.columns if df[c].nunique() <= 2 and df[c].dtype in [np.int64, np.int32, np.float64, np.int8]]
         if not valid: return None
-
     total = len(df)
     stats = []
-    
     for t in valid:
         try:
             series = pd.to_numeric(df[t], errors='coerce').fillna(0)
@@ -439,9 +475,7 @@ def build_impact_matrix(df, theme_cols):
                     'Avg Rating When Present': avg,
                     'Count': count
                 })
-        except:
-            continue
-            
+        except: continue
     if not stats: return None
     plot_df = pd.DataFrame(stats)
     return plot_df.sort_values('Frequency (%)', ascending=False).head(30)
@@ -449,7 +483,6 @@ def build_impact_matrix(df, theme_cols):
 # ==========================================
 # 5. SIDEBAR & FILTERS
 # ==========================================
-# INITIAL LOADER
 if 'data_loaded' not in st.session_state:
     loader = st.empty()
     with loader.container():
@@ -511,20 +544,28 @@ df = df_raw[mask].copy()
 theme_cols = st.session_state.get('theme_cols', [])
 
 # ==========================================
-# 6. DASHBOARD
+# 6. DASHBOARD MAIN UI
 # ==========================================
 st.title("🦅 Strategic Intelligence Platform")
 
-# Timestamp
 last_time = st.session_state.get('last_fetched', 'Just now')
 st.markdown(f"<div class='timestamp-box'><span class='live-dot'></span>Data Last Fetched: {last_time}</div>", unsafe_allow_html=True)
 
-tab_exec, tab_drivers, tab_compare, tab_monthly, tab_trends, tab_text, tab_ai = st.tabs([
-    "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Period-Over-Period Matrix", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
-])
+nav_options = [
+    "📊 Boardroom Summary", 
+    "🚀 Drivers & Barriers", 
+    "⚔️ Head-to-Head", 
+    "📅 Period-Over-Period Matrix", 
+    "📈 Trends", 
+    "🔡 Text Analytics", 
+    "🤖 AI Analyst"
+]
+
+active_tab = st.radio("Navigation", nav_options, horizontal=True, label_visibility="collapsed", key="main_nav")
+st.markdown("---")
 
 # === TAB 1: BOARDROOM ===
-with tab_exec:
+if active_tab == "📊 Boardroom Summary":
     curr_vol, delta_vol = calculate_delta(df, 'score', 'count')
     curr_csat, delta_csat = calculate_delta(df, 'score', 'mean')
     k1, k2, k3, k4 = st.columns(4)
@@ -604,9 +645,8 @@ with tab_exec:
         st.plotly_chart(dark_chart(fig_len), use_container_width=True, key="exec_len")
 
 # === TAB 2: DRIVERS & BARRIERS ===
-with tab_drivers:
+elif active_tab == "🚀 Drivers & Barriers":
     st.markdown("### 🚦 Strategic Landscape")
-    
     st.markdown("#### 🎯 Strategic Impact Matrix (Frequency vs. Rating Impact)")
     impact_df = build_impact_matrix(df, theme_cols)
     if impact_df is not None and not impact_df.empty:
@@ -619,7 +659,11 @@ with tab_drivers:
         fig_imp.update_traces(textposition='top center')
         st.plotly_chart(dark_chart(fig_imp), use_container_width=True, key="impact_matrix")
     else:
-        st.warning("Insufficient data for Impact Matrix. Select more data or check if themes are tagged.")
+        st.warning("⚠️ **Low Signal Warning:** Reviews found, but no specific Driver/Barrier tags detected in this selection.")
+        with st.expander("🔍 Debugging Info"):
+            st.write(f"Total Reviews: {len(df)}")
+            if theme_cols: st.write(f"Themes Configured: {len(theme_cols)}")
+            else: st.write("No theme columns detected.")
 
     st.markdown("---")
     
@@ -691,7 +735,7 @@ with tab_drivers:
                 st.plotly_chart(dark_chart(fig_evo), use_container_width=True, key="db_evo_chart")
 
 # === TAB 3: HEAD TO HEAD ===
-with tab_compare:
+elif active_tab == "⚔️ Head-to-Head":
     c1, c2 = st.columns(2)
     with c1: b1 = st.selectbox("Brand A", sel_brands, index=0 if sel_brands else None, key="h2h_b1")
     with c2: b2 = st.selectbox("Brand B", [b for b in sel_brands if b!=b1], index=0 if len(sel_brands)>1 else None, key="h2h_b2")
@@ -754,7 +798,7 @@ with tab_compare:
         st.plotly_chart(dark_chart(fig_trend), use_container_width=True, key="h2h_trend")
 
 # === TAB 4: PERIOD MATRIX ===
-with tab_monthly:
+elif active_tab == "📅 Period-Over-Period Matrix":
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
     st.caption("View how theme intensity changes over time. First row is the Base (N) count.")
     c_m1, c_m2 = st.columns(2)
@@ -780,14 +824,7 @@ with tab_monthly:
     drivers_df = m_base[m_base['score'] >= 4]
     df_d, top_d = build_period_matrix(drivers_df, theme_cols, sel_brands)
     if df_d is not None:
-        st.dataframe(
-            df_d.style
-            .background_gradient(cmap='Greens', subset=pd.IndexSlice[top_d, :], axis=None)
-            .format("{:.1f}", subset=pd.IndexSlice[top_d, :])
-            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :])
-            .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
-            use_container_width=True
-        )
+        st.dataframe(df_d.style.background_gradient(cmap='Greens', subset=pd.IndexSlice[top_d, :], axis=None).format("{:.1f}", subset=pd.IndexSlice[top_d, :]).format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :]).set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}), use_container_width=True)
     else: st.info("No Driver data.")
         
     st.markdown("---")
@@ -795,18 +832,11 @@ with tab_monthly:
     barriers_df = m_base[m_base['score'] <= 3]
     df_b, top_b = build_period_matrix(barriers_df, theme_cols, sel_brands)
     if df_b is not None:
-        st.dataframe(
-            df_b.style
-            .background_gradient(cmap='Reds', subset=pd.IndexSlice[top_b, :], axis=None)
-            .format("{:.1f}", subset=pd.IndexSlice[top_b, :])
-            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :])
-            .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
-            use_container_width=True
-        )
+        st.dataframe(df_b.style.background_gradient(cmap='Reds', subset=pd.IndexSlice[top_b, :], axis=None).format("{:.1f}", subset=pd.IndexSlice[top_b, :]).format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :]).set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}), use_container_width=True)
     else: st.info("No Barrier data.")
 
 # === TAB 5: TRENDS ===
-with tab_trends:
+elif active_tab == "📈 Trends":
     view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True, key="tr_view")
     t_col = 'Month' if view == "Monthly" else 'Week'
     if 'at' in df.columns:
@@ -832,7 +862,7 @@ with tab_trends:
             st.plotly_chart(dark_chart(fig_csat), use_container_width=True, key="tr_csat")
 
 # === TAB 6: TEXT ANALYTICS ===
-with tab_text:
+elif active_tab == "🔡 Text Analytics":
     st.markdown("### 🔡 Deep Text Analytics")
     c1, c2 = st.columns(2)
     with c1:
@@ -855,7 +885,7 @@ with tab_text:
         st.plotly_chart(dark_chart(fig), use_container_width=True, key="txt_hist")
 
 # === TAB 7: AI ANALYST ===
-with tab_ai:
+elif active_tab == "🤖 AI Analyst":
     st.markdown("### 🤖 Brand Strategic Briefs")
     cols = st.columns(2)
     for i, brand in enumerate(sel_brands):
