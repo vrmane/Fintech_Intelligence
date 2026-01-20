@@ -51,11 +51,21 @@ st.markdown("""
             margin-bottom: 25px;
         }
         .timestamp-box {
-            font-size: 0.9em;
+            font-size: 0.85em;
             color: #94a3b8;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
             border-bottom: 1px solid #334155;
-            padding-bottom: 10px;
+            padding-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .live-dot {
+            height: 8px;
+            width: 8px;
+            background-color: #22c55e;
+            border-radius: 50%;
+            display: inline-block;
         }
         hr { margin: 2em 0; border-color: #334155; }
         h1, h2, h3, h4 { color: #f8fafc; font-family: 'Inter', sans-serif; }
@@ -128,6 +138,7 @@ def load_data():
     if not all_rows: return pd.DataFrame()
     df = pd.DataFrame(all_rows)
 
+    # --- IST DATE HANDLING ---
     ist = pytz.timezone('Asia/Kolkata')
     
     if 'Review_Date' in df.columns:
@@ -142,6 +153,8 @@ def load_data():
             df.loc[mask, 'at'] = pd.to_datetime(df.loc[mask, 'Review_Date'], format='%d-%m-%Y', errors='coerce').dt.tz_localize('UTC').dt.tz_convert(ist)
             
         df = df.dropna(subset=['at'])
+        
+        # Date Parts
         df['Month'] = df['at'].dt.strftime('%Y-%m')
         df['Week'] = df['at'].dt.strftime('%Y-W%V')
 
@@ -163,7 +176,8 @@ def load_data():
         df.rename(columns={col: clean_name}, inplace=True)
     
     st.session_state['theme_cols'] = list(clean_net_map.values())
-    st.session_state['last_fetched'] = datetime.now(ist).strftime("%d %b %Y, %I:%M %p IST")
+    # Save the actual datetime object for calculations
+    st.session_state['fetch_dt'] = datetime.now(ist)
     
     return df
 
@@ -257,7 +271,38 @@ def get_brand_insights(df, brand, theme_cols):
             insights.append(f"**Risk:** <span style='color:#f87171'>{top_b}</span> (**{pct:.0f}%** of negative)")
     return insights
 
-# === NEW: Helper for Building Period Matrix ===
+def generate_global_summary(df, theme_cols, current_filters):
+    if df.empty: return "No data."
+    avg_rating = df['score'].mean()
+    vol = len(df)
+    leader = df.groupby('App_Name')['score'].mean().idxmax()
+    
+    pos_df = df[df['score'] >= 4]
+    top_driver = "N/A"
+    if not pos_df.empty and theme_cols:
+        valid = [t for t in theme_cols if t in pos_df.columns]
+        if valid: top_driver = pos_df[valid].sum().idxmax()
+            
+    neg_df = df[df['score'] <= 3]
+    top_barrier = "N/A"
+    if not neg_df.empty and theme_cols:
+        valid = [t for t in theme_cols if t in neg_df.columns]
+        if valid: top_barrier = neg_df[valid].sum().idxmax()
+            
+    html = f"""
+    <div class='ai-insight-box'>
+        <div class='ai-header'>🤖 AI Analyst: Global Strategic Brief</div>
+        <div class='ai-text'>
+            • <b>Context:</b> Analyzing <b>{vol:,}</b> reviews ({current_filters}). Category CSAT: <b>{avg_rating:.2f} ⭐</b>.<br>
+            • <b>Leader:</b> <b>{leader}</b> is currently setting the benchmark for satisfaction.<br>
+            • <b>Market Driver:</b> <b>'{top_driver}'</b> is the key sentiment engine.<br>
+            • <b>Market Barrier:</b> <b>'{top_barrier}'</b> is the top friction point.
+        </div>
+    </div>
+    """
+    return html
+
+# === Helper for Period Matrix ===
 def build_period_matrix(sub_df, theme_cols, sel_brands):
     if sub_df.empty or not theme_cols:
         return None, None
@@ -347,9 +392,20 @@ theme_cols = st.session_state.get('theme_cols', [])
 # ==========================================
 st.title("🦅 Strategic Intelligence Platform")
 
-# Timestamp
-last_time = st.session_state.get('last_fetched', 'Just now')
-st.markdown(f"<div class='timestamp-box'>Data Last Fetched: {last_time}</div>", unsafe_allow_html=True)
+# --- SMART TIMESTAMP (IST + RELATIVE) ---
+if 'fetch_dt' in st.session_state:
+    ft = st.session_state['fetch_dt']
+    ist = pytz.timezone('Asia/Kolkata')
+    now_ist = datetime.now(ist)
+    diff = now_ist - ft
+    mins = int(diff.total_seconds() / 60)
+    
+    if mins < 1: rel = "Just now"
+    elif mins < 60: rel = f"{mins} mins ago"
+    else: rel = f"{int(mins/60)} hours ago"
+    
+    time_str = f"Data Last Fetched: {ft.strftime('%d %b %Y, %I:%M %p IST')} ({rel})"
+    st.markdown(f"<div class='timestamp-box'><span class='live-dot'></span>{time_str}</div>", unsafe_allow_html=True)
 
 tab_exec, tab_drivers, tab_compare, tab_monthly, tab_trends, tab_text, tab_ai = st.tabs([
     "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Period-Over-Period Matrix", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
@@ -439,7 +495,7 @@ with tab_drivers:
             p_pct = p_data.div(pos_bases, axis=1) * 100
             p_pct['Avg'] = p_pct.mean(axis=1)
             p_pct = p_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,} Reviews"), use_container_width=True, key="db_pos")
+            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,}"), use_container_width=True, key="db_pos")
     with c_h2:
         st.markdown("**🛑 Barriers (%)**")
         if not neg_bases.empty and theme_cols:
@@ -448,7 +504,7 @@ with tab_drivers:
             n_pct = n_data.div(neg_bases, axis=1) * 100
             n_pct['Avg'] = n_pct.mean(axis=1)
             n_pct = n_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,} Reviews"), use_container_width=True, key="db_neg")
+            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,}"), use_container_width=True, key="db_neg")
 
     st.markdown("---")
     st.markdown("### 🧬 Theme Evolution (Brand Comparison)")
@@ -641,3 +697,5 @@ with tab_ai:
                 {"".join([f'<div style="margin-bottom:5px;">✦ {txt}</div>' for txt in insights])}
             </div>
             """, unsafe_allow_html=True)
+    filter_desc = f"{len(sel_brands)} Brands"
+    st.markdown(generate_global_summary(df, theme_cols, filter_desc), unsafe_allow_html=True)
