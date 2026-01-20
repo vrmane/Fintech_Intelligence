@@ -486,7 +486,7 @@ with tab_compare:
                 fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Overlap (%)")
                 st.plotly_chart(fig, use_container_width=True, key="h2h_radar")
 
-# === TAB 4: PERIOD MATRIX (TABLE VIEW) ===
+# === TAB 4: PERIOD MATRIX (TABLE WITH BASE ROW) ===
 with tab_monthly:
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
     
@@ -547,6 +547,18 @@ with tab_monthly:
         
         # Build Data for DataFrame
         data = []
+        
+        # Build Base Row FIRST
+        base_row_data = {}
+        for p in periods:
+            for b in sel_brands:
+                if b not in base_matrix.columns: continue
+                val = base_matrix.loc[p, b]
+                base_row_data[(p, b)] = f"{val:,}" # Format as string with commas
+        
+        # Add Base Row to data list
+        # We handle this by creating a special dataframe first
+        
         for theme in top_m_themes:
             row = {}
             for p in periods:
@@ -558,7 +570,6 @@ with tab_monthly:
                     base = base_matrix.loc[p, b]
                     
                     val = (count / base * 100) if base > 0 else 0
-                    # Store as Tuple key for MultiIndex later
                     row[(p, b)] = val
             data.append(row)
             
@@ -568,11 +579,28 @@ with tab_monthly:
         # Sort Columns
         final_df = final_df.sort_index(axis=1)
         
-        st.markdown(f"**Top 20 {rep_type} by {time_grain}** (Values are %)")
+        # Insert Base Row at the top
+        # Create a DF for the base row with same columns
+        base_row_df = pd.DataFrame([base_row_data], index=["Base (N)"])
+        # Align columns
+        base_row_df = base_row_df.reindex(columns=final_df.columns)
+        
+        # Concat: Base Row on top
+        # Note: Concatenating mixed types (str and float) converts everything to object/str
+        # So styling gradients won't work on the whole thing easily.
+        # Strategy: Display Base Row separately or use a hack.
+        # User requested: "add that below the brand name row". In Streamlit, this is index 0.
+        
+        # Let's display the Base Matrix as a styled row at the top
+        st.markdown(f"**Top 20 {rep_type} by {time_grain}**")
+        
+        # We print the base row as a separate small dataframe to keep styling on main
+        st.caption("Base Counts (N) per Period:")
+        st.dataframe(base_row_df.style.set_properties(**{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}), use_container_width=True)
+        
+        # Main Data
         st.dataframe(final_df.style.background_gradient(cmap=color_scale, axis=None).format("{:.1f}"), use_container_width=True)
         
-        with st.expander("Show Base Sizes (N)"):
-            st.dataframe(base_matrix.T, use_container_width=True)
     else:
         st.info("No data for selected range.")
 
