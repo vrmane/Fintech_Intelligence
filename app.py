@@ -188,7 +188,7 @@ if 'data_loaded' not in st.session_state:
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
             if lottie_json: st_lottie(lottie_json, height=300, key="loader")
-            st.markdown("<h3 style='text-align:center; color:#38bdf8;'>Establishing Secure Connection...</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='text-align:center; color:#38bdf8;'>Loading...</h3>", unsafe_allow_html=True)
     df_raw = load_data()
     st.session_state['df_raw'] = df_raw
     st.session_state['data_loaded'] = True
@@ -405,32 +405,6 @@ def build_battleground(df, b1, b2, theme_cols):
         
     return pd.DataFrame(data).sort_values('Delta')
 
-def build_impact_matrix(df, theme_cols):
-    if df.empty or not theme_cols: return None
-    valid = [t for t in theme_cols if t in df.columns]
-    if not valid: return None
-    
-    total = len(df)
-    counts = df[valid].sum()
-    freq_pct = (counts / total) * 100
-    
-    impacts = {}
-    for t in valid:
-        if counts[t] > 0:
-            avg = df.loc[df[t]==1, 'score'].mean()
-            impacts[t] = avg
-        else:
-            impacts[t] = 0
-            
-    plot_df = pd.DataFrame({
-        'Theme': valid,
-        'Frequency (%)': freq_pct,
-        'Avg Rating When Present': pd.Series(impacts)
-    })
-    
-    plot_df = plot_df[plot_df['Frequency (%)'] > 0].sort_values('Frequency (%)', ascending=False).head(30)
-    return plot_df
-
 # ==========================================
 # 6. SIDEBAR & FILTERS
 # ==========================================
@@ -569,24 +543,7 @@ with tab_exec:
 
 # === TAB 2: DRIVERS & BARRIERS ===
 with tab_drivers:
-    st.markdown("### 🚦 Strategic Landscape")
-    
-    st.markdown("#### 🎯 Strategic Impact Matrix (Frequency vs. Rating Impact)")
-    st.info("💡 **Top Right:** Key Drivers (High Freq, High Rating) | **Bottom Right:** Critical Issues (High Freq, Low Rating)")
-    
-    impact_df = build_impact_matrix(df, theme_cols)
-    if impact_df is not None and not impact_df.empty:
-        fig_imp = px.scatter(impact_df, x="Frequency (%)", y="Avg Rating When Present", 
-                             text="Theme", size="Frequency (%)", color="Avg Rating When Present",
-                             color_continuous_scale="RdYlGn", title="Theme Impact Analysis")
-        avg_rating = df['score'].mean()
-        fig_imp.add_hline(y=avg_rating, line_dash="dash", annotation_text="Global Avg Rating")
-        fig_imp.update_traces(textposition='top center')
-        st.plotly_chart(dark_chart(fig_imp), use_container_width=True, key="impact_matrix")
-    else:
-        st.warning("Insufficient data for Impact Matrix. Select more data or check if themes are tagged.")
-
-    st.markdown("---")
+    st.markdown("### 🚦 Strategic Drivers & Barriers")
     
     st.markdown("#### 🚀 Drivers (4-5★)")
     st.caption("Themes most frequently associated with positive reviews. Darker green = Higher frequency.")
