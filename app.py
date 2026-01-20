@@ -80,20 +80,16 @@ def get_top_words_pct(text_series, total_count, top_n=20):
     text = re.sub(r'[^a-z\s]', '', text)
     words = [w for w in text.split() if w not in stop_words and len(w) > 2]
     counter = Counter(words)
-    
-    # Convert to %
     data = []
     for word, count in counter.most_common(top_n):
         pct = (count / total_count) * 100
         data.append({'Word': word, 'Pct': pct, 'Count': count})
-        
     return pd.DataFrame(data)
 
 def calculate_delta(df, col, agg_func='count'):
     if 'Month' not in df.columns or df.empty: return 0, 0
     months = sorted(df['Month'].unique())
     if len(months) < 2: return 0, 0
-    
     curr, prev = months[-1], months[-2]
     
     if agg_func == 'count':
@@ -134,7 +130,6 @@ def load_data():
     if not all_rows: return pd.DataFrame()
     df = pd.DataFrame(all_rows)
 
-    # Parsing
     if 'Review_Date' in df.columns:
         df['at'] = pd.to_datetime(df['Review_Date'], errors='coerce')
         mask = df['at'].isna()
@@ -188,7 +183,7 @@ if df_raw.empty:
     st.stop()
 
 # ==========================================
-# 5. ANALYTICS & VISUALS
+# 5. VISUALIZATION FUNCTIONS
 # ==========================================
 def dark_chart(fig):
     fig.update_layout(
@@ -201,39 +196,10 @@ def dark_chart(fig):
     )
     return fig
 
-def calculate_growth_matrix(df, theme_cols, time_col, brands):
-    valid_themes = [t for t in theme_cols if t in df.columns]
-    if not valid_themes: return pd.DataFrame()
-    top_themes = df[valid_themes].sum().sort_values(ascending=False).head(10).index.tolist()
-    matrix = {}
-    for brand in brands:
-        b_df = df[df['App_Name'] == brand].sort_values(time_col)
-        periods = b_df[time_col].unique()
-        if len(periods) < 2:
-            matrix[brand] = [0.0] * len(top_themes)
-            continue
-        last, prev = periods[-1], periods[-2]
-        
-        last_df = b_df[b_df[time_col] == last]
-        prev_df = b_df[b_df[time_col] == prev]
-        last_vol, prev_vol = len(last_df), len(prev_df)
-        
-        growth = []
-        for t in top_themes:
-            if prev_vol == 0: g = 0.0
-            else:
-                s_last = last_df[t].sum() / last_vol if last_vol else 0
-                s_prev = prev_df[t].sum() / prev_vol
-                g = ((s_last - s_prev) / s_prev * 100) if s_prev > 0 else 0
-            growth.append(g)
-        matrix[brand] = growth
-    return pd.DataFrame(matrix, index=top_themes)
-
 def get_brand_insights(df, brand, theme_cols):
     b_df = df[df['App_Name'] == brand]
-    if b_df.empty: return ["No data available."]
+    if b_df.empty: return ["No data."]
     insights = []
-    
     cohort_avg = df['score'].mean()
     brand_avg = b_df['score'].mean()
     diff = brand_avg - cohort_avg
@@ -305,7 +271,6 @@ with st.sidebar:
     st.markdown("### 📊 Metrics")
     sel_ratings = st.multiselect("Ratings", [1, 2, 3, 4, 5], default=[1, 2, 3, 4, 5])
     
-    # Sentiment Filter
     if 'Sentiment' in df_raw.columns:
         sent_opts = sorted(df_raw['Sentiment'].dropna().unique())
         sel_sent = st.multiselect("Sentiment", sent_opts)
@@ -365,8 +330,6 @@ with tab_exec:
             One=('score', lambda x: (x==1).sum()), Five=('score', lambda x: (x==5).sum())
         ).reset_index()
         bs['NPS'] = ((bs['Five'] - bs['One'])/bs['Vol']*100).round(1)
-        
-        # Add Base to hover
         fig_mtx = px.scatter(bs, x="CSAT", y="NPS", size="Vol", color="App_Name", text="App_Name", 
                          title="Brand Matrix (Size=Volume)", height=400,
                          hover_data={"Vol": True, "CSAT": ":.2f", "NPS": ":.1f"})
@@ -378,7 +341,6 @@ with tab_exec:
         sent_counts = df.groupby(['App_Name', 'Sentiment_Label']).size().reset_index(name='Count')
         total_counts = sent_counts.groupby('App_Name')['Count'].transform('sum')
         sent_counts['Pct'] = (sent_counts['Count'] / total_counts) * 100
-        
         fig_stack = px.bar(sent_counts, x="App_Name", y="Pct", color="Sentiment_Label", 
                            color_discrete_map={'Positive': '#10b981', 'Neutral': '#64748b', 'Negative': '#ef4444'},
                            title="Sentiment Ratio (Base in Hover)", height=400,
@@ -389,10 +351,8 @@ with tab_exec:
     with c3:
         st.markdown("#### 📝 Engagement Quality")
         len_counts = df.groupby(['App_Name', 'length_bucket']).size().reset_index(name='Count')
-        # Calculate %
         tot_len = len_counts.groupby('App_Name')['Count'].transform('sum')
         len_counts['Pct'] = (len_counts['Count'] / tot_len) * 100
-        
         fig_len = px.bar(len_counts, x="App_Name", y="Pct", color="length_bucket", barmode='group',
                          title="Brief vs Detailed Reviews (%)", height=350,
                          hover_data={'Count': True, 'Pct': ':.1f'})
@@ -436,35 +396,67 @@ with tab_drivers:
             st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,}"), use_container_width=True, key="db_neg")
 
     st.markdown("---")
-    st.markdown("### 🧬 Theme Evolution (Trend Comparison)")
-    evo_type = st.radio("Category", ["Drivers (Positive)", "Barriers (Negative)"], horizontal=True, key="db_evo_type")
-    trend_src = df[df['score'] >= 4] if "Positive" in evo_type else df[df['score'] <= 3]
+    
+    # AGGREGATE INTENSITY
+    st.markdown("#### 📈 Aggregate Intensity Trends (Across Brands)")
+    c_agg1, c_agg2 = st.columns(2)
+    
+    def get_agg_trend(sub_df, themes, time_col):
+        if sub_df.empty: return pd.DataFrame()
+        valid = [t for t in themes if t in sub_df.columns]
+        # Calculate row-wise "Any Theme" hit
+        sub_df['Has_Theme'] = sub_df[valid].sum(axis=1).apply(lambda x: 1 if x > 0 else 0)
+        # Group
+        trend = sub_df.groupby([time_col, 'App_Name']).agg(
+            Pct=('Has_Theme', 'mean'),
+            Base=('Has_Theme', 'count')
+        ).reset_index()
+        trend['Pct'] = trend['Pct'] * 100
+        if time_col == 'Week': trend['Week'] = trend['Week'].astype(str)
+        return trend
 
-    if not trend_src.empty and theme_cols:
-        top_opts = trend_src[theme_cols].sum().sort_values(ascending=False).head(20).index.tolist()
-        sel_themes = st.multiselect("Compare Themes", top_opts, default=top_opts[:3], key="db_theme_sel")
+    agg_view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True, key="agg_view")
+    agg_col = 'Month' if agg_view == "Monthly" else 'Week'
+
+    with c_agg1:
+        st.markdown("**Driver Intensity (Positive)**")
+        pos_trend = get_agg_trend(df[df['score']>=4], theme_cols, agg_col)
+        if not pos_trend.empty:
+            fig_pt = px.line(pos_trend, x=agg_col, y='Pct', color='App_Name', markers=True, 
+                             title="% of Reviews with Drivers", hover_data={'Base':True, 'Pct':':.1f'})
+            st.plotly_chart(dark_chart(fig_pt), use_container_width=True, key="agg_pos")
+    
+    with c_agg2:
+        st.markdown("**Barrier Intensity (Negative)**")
+        neg_trend = get_agg_trend(df[df['score']<=3], theme_cols, agg_col)
+        if not neg_trend.empty:
+            fig_nt = px.line(neg_trend, x=agg_col, y='Pct', color='App_Name', markers=True, 
+                             title="% of Reviews with Barriers", hover_data={'Base':True, 'Pct':':.1f'})
+            st.plotly_chart(dark_chart(fig_nt), use_container_width=True, key="agg_neg")
+
+    st.markdown("---")
+    
+    # SPECIFIC THEME COMPARE
+    st.markdown("#### 🧬 Deep Dive: Specific Theme Trend")
+    evo_src = st.radio("Source", ["Positive (4-5★)", "Negative (1-3★)"], horizontal=True, key="evo_src")
+    src_df = df[df['score']>=4] if "Positive" in evo_src else df[df['score']<=3]
+    
+    if not src_df.empty and theme_cols:
+        top_t = src_df[theme_cols].sum().sort_values(ascending=False).head(20).index.tolist()
+        sel_t = st.selectbox("Select Theme to Compare Across Brands", top_t, key="sel_t")
         
-        if sel_themes:
-            t_view = st.radio("View", ["Monthly", "Weekly"], horizontal=True, key="db_time_view")
-            t_col = 'Month' if t_view == "Monthly" else 'Week'
+        if sel_t:
+            # Calculate prevalence per brand per month
+            theme_trend = src_df.groupby([agg_col, 'App_Name']).agg(
+                Count=(sel_t, 'sum'),
+                Base=(sel_t, 'count')
+            ).reset_index()
+            theme_trend['Pct'] = (theme_trend['Count'] / theme_trend['Base']) * 100
+            if agg_col == 'Week': theme_trend['Week'] = theme_trend['Week'].astype(str)
             
-            trend_data = []
-            grouped = trend_src.groupby(t_col)
-            for t_val, group in grouped:
-                base_vol = len(group)
-                if base_vol == 0: continue
-                for theme in sel_themes:
-                    if theme in group.columns:
-                        count = group[theme].sum()
-                        pct = (count / base_vol) * 100
-                        trend_data.append({t_col: str(t_val), "Theme": theme, "Prevalence": pct, "Base": base_vol})
-            
-            if trend_data:
-                plot_df = pd.DataFrame(trend_data).sort_values(t_col)
-                fig_evo = px.line(plot_df, x=t_col, y="Prevalence", color="Theme", markers=True, 
-                                  title=f"Evolution Trend (%)", labels={"Prevalence": "% of Reviews"},
-                                  hover_data={"Base": True, "Prevalence": ":.1f"})
-                st.plotly_chart(dark_chart(fig_evo), use_container_width=True, key="db_evo_chart")
+            fig_tt = px.line(theme_trend, x=agg_col, y='Pct', color='App_Name', markers=True,
+                             title=f"Trend: '{sel_t}' across Brands", hover_data={'Base':True, 'Pct':':.1f'})
+            st.plotly_chart(dark_chart(fig_tt), use_container_width=True, key="evo_tt")
 
 # === TAB 3: HEAD TO HEAD ===
 with tab_compare:
@@ -504,20 +496,21 @@ with tab_trends:
     view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True, key="tr_view")
     t_col = 'Month' if view == "Monthly" else 'Week'
     if 'at' in df.columns:
-        # Calculate Share of Voice (SoV) %
+        # SoV
         trend = df.groupby([t_col, 'App_Name']).size().reset_index(name='Count')
-        total_vol = df.groupby(t_col).size().reset_index(name='Total')
-        trend = trend.merge(total_vol, on=t_col)
+        tot = df.groupby(t_col).size().reset_index(name='Total')
+        trend = trend.merge(tot, on=t_col)
         trend['SoV'] = (trend['Count'] / trend['Total']) * 100
         
-        trend_csat = df.groupby([t_col, 'App_Name'])['score'].mean().reset_index(name='CSAT')
+        csat = df.groupby([t_col, 'App_Name'])['score'].agg(['mean','count']).reset_index()
+        csat.columns = [t_col, 'App_Name', 'CSAT', 'Base']
         
         if view == "Weekly": 
             trend['Week'] = trend['Week'].astype(str)
-            trend_csat['Week'] = trend_csat['Week'].astype(str)
+            csat['Week'] = csat['Week'].astype(str)
         
-        st.plotly_chart(dark_chart(px.line(trend_csat, x=t_col, y='CSAT', color='App_Name', markers=True, title="CSAT Trend", hover_data={'CSAT':':.2f'})), use_container_width=True, key="tr_csat")
-        st.plotly_chart(dark_chart(px.line(trend, x=t_col, y='SoV', color='App_Name', markers=True, title="Share of Voice (%)", labels={'SoV':'% Share'}, hover_data={'Count':True, 'SoV':':.1f'})), use_container_width=True, key="tr_vol")
+        st.plotly_chart(dark_chart(px.line(csat, x=t_col, y='CSAT', color='App_Name', markers=True, title="CSAT Trend", hover_data={'Base':True, 'CSAT':':.2f'})), use_container_width=True, key="tr_csat")
+        st.plotly_chart(dark_chart(px.line(trend, x=t_col, y='SoV', color='App_Name', markers=True, title="Share of Voice (%)", hover_data={'Count':True, 'SoV':':.1f'})), use_container_width=True, key="tr_vol")
 
 # === TAB 5: TEXT ANALYTICS ===
 with tab_text:
@@ -528,19 +521,17 @@ with tab_text:
         txt_type = st.radio("Sentiment", ["Positive (4-5★)", "Negative (1-3★)"], horizontal=True, key="txt_radio")
         txt_df = df[df['score']>=4] if "Positive" in txt_type else df[df['score']<=3]
         if not txt_df.empty:
-            total_reviews = len(txt_df)
-            words_df = get_top_words_pct(txt_df['Review_Text'], total_reviews)
-            
+            base = len(txt_df)
+            words_df = get_top_words_pct(txt_df['Review_Text'], base)
             fig = px.bar(words_df, x='Pct', y='Word', orientation='h', 
-                         title=f"Top Words (Base: {total_reviews})", 
-                         labels={'Pct': '% of Reviews'},
-                         hover_data={'Count': True, 'Pct': ':.1f'})
+                         title=f"Top Words (Base: {base})", labels={'Pct':'% of Reviews'},
+                         hover_data={'Count':True, 'Pct':':.1f'})
             fig.update_layout(yaxis={'categoryorder':'total ascending'})
             st.plotly_chart(dark_chart(fig), use_container_width=True, key="txt_bar")
             
     with c2:
         st.markdown("**Review Length Distribution**")
-        fig = px.histogram(df, x='char_count', color='App_Name', nbins=50, title="Character Count Distribution")
+        fig = px.histogram(df, x='char_count', color='App_Name', nbins=50, title="Character Count Dist.")
         st.plotly_chart(dark_chart(fig), use_container_width=True, key="txt_hist")
 
 # === TAB 6: DATA ===
