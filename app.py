@@ -188,7 +188,7 @@ if 'data_loaded' not in st.session_state:
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
             if lottie_json: st_lottie(lottie_json, height=300, key="loader")
-            st.markdown("<h3 style='text-align:center; color:#38bdf8;'>Loading...</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='text-align:center; color:#38bdf8;'>Establishing Secure Connection...</h3>", unsafe_allow_html=True)
     df_raw = load_data()
     st.session_state['df_raw'] = df_raw
     st.session_state['data_loaded'] = True
@@ -300,7 +300,7 @@ def generate_global_summary(df, theme_cols, current_filters):
     return html
 
 def build_period_matrix(sub_df, theme_cols, sel_brands):
-    # Safety: If sub_df is empty or no themes
+    # Safety Check
     if not theme_cols: return None, None
     if sub_df.empty: return None, None
     
@@ -311,10 +311,10 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
     if not valid: return None, None
     
     top_themes = sub_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
+    
     data = []
     base_row_data = {}
     
-    # 1. Build Base Row (safe lookup)
     for p in periods:
         for b in sel_brands:
             if b in base_matrix.columns:
@@ -322,14 +322,12 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
             else:
                 base_row_data[(p, b)] = 0
     
-    # 2. Build Data Rows
     for theme in top_themes:
         row = {}
         for p in periods:
             for b in sel_brands:
                 val = 0
                 if b in base_matrix.columns:
-                    # Optimized boolean mask
                     mask = (sub_df['Period'] == p) & (sub_df['App_Name'] == b)
                     if mask.any():
                         count = sub_df.loc[mask, theme].sum()
@@ -353,8 +351,8 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
 def build_brand_matrix(sub_df, theme_cols, sel_brands):
     if not theme_cols: return None, None
     
-    # Even if sub_df is empty, we show structure with 0s
     if sub_df.empty:
+        # Return empty structure with 0s to avoid "No Data" error when columns exist
         base_counts = pd.Series(0, index=sel_brands)
         top_themes = []
     else:
