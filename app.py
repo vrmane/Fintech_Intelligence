@@ -24,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CEO-GRADE CSS ---
+# --- CEO-GRADE CSS (Includes Tab Stabilization) ---
 st.markdown("""
     <style>
         .stApp { background-color: #0b0f19; color: #e2e8f0; }
@@ -73,7 +73,10 @@ st.markdown("""
         .stCaption { font-size: 0.9em; color: #94a3b8; font-style: italic; }
         
         /* NAVIGATION STABILIZATION CSS */
-        div[role="radiogroup"] > label > div:first-child { display: none !important; }
+        /* Hides the radio circle to look like tabs */
+        div[role="radiogroup"] > label > div:first-child {
+            display: none !important;
+        }
         div[role="radiogroup"] {
             background-color: #1e293b;
             padding: 8px;
@@ -97,6 +100,7 @@ st.markdown("""
             background-color: #334155;
             color: #fff !important;
         }
+        /* Active Tab Style */
         div[role="radiogroup"] label[data-checked="true"] {
             background-color: #38bdf8 !important;
             color: #0f172a !important;
@@ -116,7 +120,8 @@ def load_lottieurl(url: str):
     try:
         r = requests.get(url)
         return r.json() if r.status_code == 200 else None
-    except: return None
+    except:
+        return None
 
 @st.cache_data(show_spinner=False)
 def get_top_words_pct(text_series, total_count, top_n=20):
@@ -161,7 +166,7 @@ def dark_chart(fig):
     return fig
 
 # ==========================================
-# 3. DATA ENGINE (BULLETPROOF LOADING)
+# 3. DATA ENGINE
 # ==========================================
 @st.cache_resource
 def init_connection():
@@ -189,7 +194,6 @@ def load_data():
 
     ist = pytz.timezone('Asia/Kolkata')
     
-    # 1. Date Parsing
     if 'Review_Date' in df.columns:
         df['at'] = pd.to_datetime(df['Review_Date'], errors='coerce')
         if df['at'].dt.tz is None:
@@ -200,12 +204,10 @@ def load_data():
         df['Month'] = df['at'].dt.strftime('%Y-%m')
         df['Week'] = df['at'].dt.strftime('%Y-W%V')
 
-    # 2. Score & Sentiment
     if 'Rating' in df.columns:
         df['score'] = pd.to_numeric(df['Rating'], errors='coerce')
         df['Sentiment_Label'] = pd.cut(df['score'], bins=[0, 2, 3, 5], labels=['Negative', 'Neutral', 'Positive'])
     
-    # 3. Text Processing
     if 'Review_Text' in df.columns:
         df['char_count'] = df['Review_Text'].astype(str).str.len().fillna(0).astype(np.int32)
         df['length_bucket'] = df['char_count'].apply(lambda x: 'Brief (<=29)' if x <= 29 else 'Detailed (>=30)').astype('category')
@@ -213,42 +215,25 @@ def load_data():
     for col in ['App_Name', 'Product_1', 'Sentiment']:
         if col in df.columns: df[col] = df[col].astype('category')
 
-    # 4. ROBUST THEME DETECTION (Fixes "No Data" bug)
-    # Strategy: Find any column with "NET" in name OR binary 0/1 content
-    potential_themes = []
+    net_cols = [c for c in df.columns if str(c).startswith('[NET]')]
     clean_net_map = {}
+    for col in net_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(np.int8)
+        clean_name = col.replace('[NET]', '').replace('[NET] ', '').strip()
+        clean_net_map[col] = clean_name
+        df.rename(columns={col: clean_name}, inplace=True)
     
-    for col in df.columns:
-        col_str = str(col).upper()
-        # Criteria 1: Name contains "NET"
-        if "NET" in col_str or col_str.startswith("["):
-            # Criteria 2: Must be numeric-ish (0s and 1s)
-            try:
-                # Force numeric conversion
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(np.int8)
-                # Check if values are mostly 0 or 1
-                unique_vals = df[col].unique()
-                if set(unique_vals).issubset({0, 1}):
-                    potential_themes.append(col)
-                    clean_name = str(col).replace('[NET]', '').replace('[NET] ', '').replace('NET', '').strip()
-                    clean_net_map[col] = clean_name
-                    df.rename(columns={col: clean_name}, inplace=True)
-            except:
-                continue
-
     st.session_state['theme_cols'] = list(clean_net_map.values())
     st.session_state['last_fetched'] = datetime.now(ist).strftime("%d %b %Y, %I:%M %p IST")
     gc.collect()
     return df
 
 # ==========================================
-# 4. ROBUST DATA PROCESSING FUNCTIONS
+# 4. DATA PROCESSING FUNCTIONS (ROBUST)
 # ==========================================
 def calculate_growth_matrix(df, theme_cols, time_col, brands):
-    if not theme_cols: return pd.DataFrame()
     valid_themes = [t for t in theme_cols if t in df.columns]
     if not valid_themes: return pd.DataFrame()
-    
     top_themes = df[valid_themes].sum().sort_values(ascending=False).head(10).index.tolist()
     matrix = {}
     for brand in brands:
@@ -331,6 +316,7 @@ def generate_global_summary(df, theme_cols, current_filters):
     return html
 
 def build_period_matrix(sub_df, theme_cols, sel_brands):
+    # Safety: If sub_df is empty or no themes
     if not theme_cols: return None, None
     if sub_df.empty: return None, None
     
@@ -344,6 +330,7 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
     data = []
     base_row_data = {}
     
+    # 1. Build Base Row (safe lookup)
     for p in periods:
         for b in sel_brands:
             if b in base_matrix.columns:
@@ -351,12 +338,14 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
             else:
                 base_row_data[(p, b)] = 0
     
+    # 2. Build Data Rows
     for theme in top_themes:
         row = {}
         for p in periods:
             for b in sel_brands:
                 val = 0
                 if b in base_matrix.columns:
+                    # Optimized boolean mask
                     mask = (sub_df['Period'] == p) & (sub_df['App_Name'] == b)
                     if mask.any():
                         count = sub_df.loc[mask, theme].sum()
@@ -367,16 +356,21 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
         
     final_df = pd.DataFrame(data, index=top_themes)
     if final_df.empty: return None, None
+    
     final_df.columns = pd.MultiIndex.from_tuples(final_df.columns)
     final_df = final_df.sort_index(axis=1)
+    
     base_row_df = pd.DataFrame([base_row_data], index=["Base (N)"])
     base_row_df.columns = pd.MultiIndex.from_tuples(base_row_df.columns)
     base_row_df = base_row_df.reindex(columns=final_df.columns).fillna(0)
+    
     return pd.concat([base_row_df, final_df]), top_themes
 
 def build_brand_matrix(sub_df, theme_cols, sel_brands):
     if not theme_cols: return None, None
-    if sub_df.empty: 
+    
+    # Even if sub_df is empty, we show structure with 0s
+    if sub_df.empty:
         base_counts = pd.Series(0, index=sel_brands)
         top_themes = []
     else:
@@ -386,6 +380,7 @@ def build_brand_matrix(sub_df, theme_cols, sel_brands):
             top_themes = sub_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
         else:
             top_themes = []
+            
     data = []
     for theme in top_themes:
         row = {}
@@ -396,33 +391,41 @@ def build_brand_matrix(sub_df, theme_cols, sel_brands):
                 row[brand] = (count / base) * 100
             else: row[brand] = 0
         data.append(row)
+        
     final_df = pd.DataFrame(data, index=top_themes)
     base_row_df = pd.DataFrame([base_counts.to_dict()], index=["Base (N)"])
+    
     return pd.concat([base_row_df, final_df]), top_themes
 
 def build_battleground(df, b1, b2, theme_cols):
     if not theme_cols: return None
     valid = [t for t in theme_cols if t in df.columns]
     if not valid: return None
+    
     df_b1 = df[df['App_Name'] == b1]
     df_b2 = df[df['App_Name'] == b2]
+    
     if df_b1.empty or df_b2.empty: return None
+    
     count_b1 = df_b1[valid].sum()
     count_b2 = df_b2[valid].sum()
     total_counts = count_b1 + count_b2
     top_themes = total_counts.sort_values(ascending=False).head(15).index.tolist()
+    
     data = []
     for t in top_themes:
         pct_1 = (count_b1[t] / len(df_b1) * 100) if len(df_b1) > 0 else 0
         pct_2 = (count_b2[t] / len(df_b2) * 100) if len(df_b2) > 0 else 0
         diff = pct_1 - pct_2 
         data.append({'Theme': t, 'Delta': diff, f'{b1} %': pct_1, f'{b2} %': pct_2})
+        
     return pd.DataFrame(data).sort_values('Delta')
 
 def build_aggregated_themes(sub_df, theme_cols):
     if sub_df.empty or not theme_cols: return pd.DataFrame()
     valid = [t for t in theme_cols if t in sub_df.columns]
     if not valid: return pd.DataFrame()
+    
     total_vol = len(sub_df)
     sums = sub_df[valid].sum().sort_values(ascending=False).head(10)
     df_agg = pd.DataFrame({'Theme': sums.index, 'Count': sums.values})
@@ -434,9 +437,11 @@ def build_brand_breakdown_matrix(sub_df, theme_cols, top_themes, brands):
         base_counts = {b: 0 for b in brands}
         data = [base_counts]
         return pd.DataFrame(data, index=["Base (N)"])
+        
     data = []
     base_counts = sub_df['App_Name'].value_counts().reindex(brands, fill_value=0)
     data.append({b: base_counts[b] for b in brands})
+    
     for theme in top_themes:
         row = {}
         for b in brands:
@@ -455,27 +460,35 @@ def build_brand_breakdown_matrix(sub_df, theme_cols, top_themes, brands):
 # === UPDATED DIAGNOSTIC FUNCTION ===
 def build_impact_matrix(df, theme_cols):
     if df.empty or not theme_cols: return None
+    
+    # Robust check for columns
     valid = [t for t in theme_cols if t in df.columns]
     if not valid:
-        # Fallback check
+        # Fallback check for integer columns
         valid = [c for c in df.columns if df[c].nunique() <= 2 and df[c].dtype in [np.int64, np.int32, np.float64, np.int8]]
         if not valid: return None
+
     total = len(df)
     stats = []
+    
     for t in valid:
         try:
             series = pd.to_numeric(df[t], errors='coerce').fillna(0)
             count = series.sum()
+            
             if count > 0:
                 avg = df.loc[series == 1, 'score'].mean()
                 if pd.isna(avg): avg = 0
+                
                 stats.append({
                     'Theme': t,
                     'Frequency (%)': (count / total) * 100,
                     'Avg Rating When Present': avg,
                     'Count': count
                 })
-        except: continue
+        except:
+            continue
+            
     if not stats: return None
     plot_df = pd.DataFrame(stats)
     return plot_df.sort_values('Frequency (%)', ascending=False).head(30)
@@ -483,6 +496,7 @@ def build_impact_matrix(df, theme_cols):
 # ==========================================
 # 5. SIDEBAR & FILTERS
 # ==========================================
+# INITIAL LOADER
 if 'data_loaded' not in st.session_state:
     loader = st.empty()
     with loader.container():
@@ -544,13 +558,15 @@ df = df_raw[mask].copy()
 theme_cols = st.session_state.get('theme_cols', [])
 
 # ==========================================
-# 6. DASHBOARD MAIN UI
+# 6. DASHBOARD MAIN UI (STATE STABILIZED)
 # ==========================================
 st.title("🦅 Strategic Intelligence Platform")
 
+# Timestamp
 last_time = st.session_state.get('last_fetched', 'Just now')
 st.markdown(f"<div class='timestamp-box'><span class='live-dot'></span>Data Last Fetched: {last_time}</div>", unsafe_allow_html=True)
 
+# --- REPLACED st.tabs WITH PERSISTENT NAV ---
 nav_options = [
     "📊 Boardroom Summary", 
     "🚀 Drivers & Barriers", 
@@ -561,7 +577,9 @@ nav_options = [
     "🤖 AI Analyst"
 ]
 
+# Use radio but style it like tabs via CSS
 active_tab = st.radio("Navigation", nav_options, horizontal=True, label_visibility="collapsed", key="main_nav")
+
 st.markdown("---")
 
 # === TAB 1: BOARDROOM ===
@@ -647,6 +665,7 @@ if active_tab == "📊 Boardroom Summary":
 # === TAB 2: DRIVERS & BARRIERS ===
 elif active_tab == "🚀 Drivers & Barriers":
     st.markdown("### 🚦 Strategic Landscape")
+    
     st.markdown("#### 🎯 Strategic Impact Matrix (Frequency vs. Rating Impact)")
     impact_df = build_impact_matrix(df, theme_cols)
     if impact_df is not None and not impact_df.empty:
@@ -662,8 +681,10 @@ elif active_tab == "🚀 Drivers & Barriers":
         st.warning("⚠️ **Low Signal Warning:** Reviews found, but no specific Driver/Barrier tags detected in this selection.")
         with st.expander("🔍 Debugging Info"):
             st.write(f"Total Reviews: {len(df)}")
-            if theme_cols: st.write(f"Themes Configured: {len(theme_cols)}")
-            else: st.write("No theme columns detected.")
+            if theme_cols:
+                st.write(f"Themes Configured: {len(theme_cols)}")
+            else:
+                st.write("No theme columns detected.")
 
     st.markdown("---")
     
@@ -703,36 +724,6 @@ elif active_tab == "🚀 Drivers & Barriers":
         if not agg_barriers.empty:
             bdf = build_brand_breakdown_matrix(neg_df, theme_cols, agg_barriers['Theme'].tolist(), sel_brands)
             st.dataframe(bdf.style.background_gradient(cmap='Reds', axis=None).format("{:.1f}", subset=pd.IndexSlice[agg_barriers['Theme'].tolist(), :]).format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :]), use_container_width=True)
-
-    # RE-ADDED: Theme Evolution Trend
-    st.markdown("---")
-    st.markdown("### 🧬 Theme Evolution (Brand Comparison)")
-    evo_type = st.radio("Category", ["Drivers (Positive)", "Barriers (Negative)"], horizontal=True, key="db_evo_type")
-    trend_src = df[df['score'] >= 4] if "Positive" in evo_type else df[df['score'] <= 3]
-
-    if not trend_src.empty and theme_cols:
-        top_opts = trend_src[theme_cols].sum().sort_values(ascending=False).head(20).index.tolist()
-        sel_theme = st.selectbox("Select Theme to Compare Trends", top_opts, key="db_theme_sel")
-        if sel_theme:
-            t_view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True, key="db_time_view_2")
-            t_col = 'Month' if t_view == "Monthly" else 'Week'
-            trend_data = []
-            grouped = trend_src.groupby([t_col, 'App_Name'], observed=True)
-            for (t_val, brand), group in grouped:
-                base_vol = len(group)
-                if base_vol == 0: continue
-                if sel_theme in group.columns:
-                    count = group[sel_theme].sum()
-                    pct = (count / base_vol) * 100
-                    trend_data.append({t_col: str(t_val), "App_Name": brand, "Prevalence": pct, "Base": base_vol})
-            if trend_data:
-                plot_df = pd.DataFrame(trend_data).sort_values(t_col)
-                fig_evo = px.line(plot_df, x=t_col, y="Prevalence", color="App_Name", markers=True, 
-                                  title=f"Evolution of '{sel_theme}' (%) across Brands", 
-                                  text="Prevalence",
-                                  hover_data={"Base": True, "Prevalence": ":.1f"})
-                fig_evo.update_traces(textposition="top center", texttemplate='%{text:.1f}')
-                st.plotly_chart(dark_chart(fig_evo), use_container_width=True, key="db_evo_chart")
 
 # === TAB 3: HEAD TO HEAD ===
 elif active_tab == "⚔️ Head-to-Head":
