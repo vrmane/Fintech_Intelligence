@@ -217,8 +217,7 @@ def dark_chart(fig):
 def calculate_growth_matrix(df, theme_cols, time_col, brands):
     valid_themes = [t for t in theme_cols if t in df.columns]
     if not valid_themes: return pd.DataFrame()
-    theme_sums = df[valid_themes].sum()
-    top_themes = theme_sums.sort_values(ascending=False).head(10).index.tolist()
+    top_themes = df[valid_themes].sum().sort_values(ascending=False).head(10).index.tolist()
     matrix = {}
     for brand in brands:
         b_df = df[df['App_Name'] == brand].sort_values(time_col)
@@ -269,12 +268,9 @@ def get_brand_insights(df, brand, theme_cols):
     return insights
 
 def build_period_matrix(sub_df, theme_cols, sel_brands):
-    if sub_df.empty or not theme_cols:
-        return None, None
-
+    if sub_df.empty or not theme_cols: return None, None
     periods = sorted(sub_df['Period'].unique())
     base_matrix = sub_df.groupby(['Period', 'App_Name']).size().unstack(fill_value=0)
-    
     valid = [t for t in theme_cols if t in sub_df.columns]
     top_themes = sub_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
     
@@ -283,8 +279,7 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
     for p in periods:
         for b in sel_brands:
             if b not in base_matrix.columns: continue
-            val = base_matrix.loc[p, b]
-            base_row_data[(p, b)] = val
+            base_row_data[(p, b)] = base_matrix.loc[p, b]
 
     for theme in top_themes:
         row = {}
@@ -296,19 +291,49 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
                     count = sub_df.loc[mask, theme].sum()
                     base = base_matrix.loc[p, b]
                     val = (count / base * 100) if base > 0 else 0
-                else:
-                    val = 0
+                else: val = 0
                 row[(p, b)] = val
         data.append(row)
         
     final_df = pd.DataFrame(data, index=top_themes)
     final_df.columns = pd.MultiIndex.from_tuples(final_df.columns)
     final_df = final_df.sort_index(axis=1)
-    
     base_row_df = pd.DataFrame([base_row_data], index=["Base (N)"])
     base_row_df.columns = pd.MultiIndex.from_tuples(base_row_df.columns)
     base_row_df = base_row_df.reindex(columns=final_df.columns)
+    return pd.concat([base_row_df, final_df]), top_themes
+
+# === NEW: Brand Matrix Builder ===
+def build_brand_matrix(sub_df, theme_cols, sel_brands):
+    if sub_df.empty or not theme_cols: return None, None
     
+    # 1. Base Counts per Brand
+    # Use reindex to ensure all selected brands exist even if count is 0
+    base_counts = sub_df['App_Name'].value_counts().reindex(sel_brands, fill_value=0)
+    
+    # 2. Top Themes
+    valid = [t for t in theme_cols if t in sub_df.columns]
+    top_themes = sub_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
+    
+    # 3. Build Data
+    data = []
+    for theme in top_themes:
+        row = {}
+        for brand in sel_brands:
+            base = base_counts[brand]
+            if base > 0:
+                count = sub_df[sub_df['App_Name'] == brand][theme].sum()
+                row[brand] = (count / base) * 100
+            else:
+                row[brand] = 0
+        data.append(row)
+        
+    final_df = pd.DataFrame(data, index=top_themes)
+    
+    # 4. Base Row
+    base_row_df = pd.DataFrame([base_counts.to_dict()], index=["Base (N)"])
+    
+    # Combine
     combined_df = pd.concat([base_row_df, final_df])
     return combined_df, top_themes
 
@@ -360,31 +385,9 @@ theme_cols = st.session_state.get('theme_cols', [])
 # ==========================================
 st.title("🦅 Strategic Intelligence Platform")
 
-# Smart Timestamp
-if 'fetch_dt' in st.session_state:
-    ft = st.session_state.get('fetch_dt')
-    # If fetch_dt was stored before this run or not available, handle gently
-    # Here we assume it's available since load_data puts it there
-    # But st.cache_data might return old data with no fetch_dt in session if not persistent
-    # Re-calc relative time just in case
-    if ft:
-        ist = pytz.timezone('Asia/Kolkata')
-        now_ist = datetime.now(ist)
-        # Ensure ft is localized
-        if ft.tzinfo is None: ft = ft.replace(tzinfo=ist)
-        
-        diff = now_ist - ft
-        mins = int(diff.total_seconds() / 60)
-        
-        if mins < 1: rel = "Just now"
-        elif mins < 60: rel = f"{mins} mins ago"
-        else: rel = f"{int(mins/60)} hours ago"
-        
-        time_str = f"Data Last Fetched: {ft.strftime('%d %b %Y, %I:%M %p IST')} ({rel})"
-    else:
-        time_str = "Data Last Fetched: Just now"
-        
-    st.markdown(f"<div class='timestamp-box'><span class='live-dot'></span>{time_str}</div>", unsafe_allow_html=True)
+# Timestamp
+last_time = st.session_state.get('last_fetched', 'Just now')
+st.markdown(f"<div class='timestamp-box'><span class='live-dot'></span>Data Last Fetched: {last_time}</div>", unsafe_allow_html=True)
 
 tab_exec, tab_drivers, tab_compare, tab_monthly, tab_trends, tab_text, tab_ai = st.tabs([
     "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Period-Over-Period Matrix", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
@@ -406,6 +409,7 @@ with tab_exec:
     with k4: st.metric("Critical Risk", f"{risk:.1f}%", delta="1-Star %", delta_color="inverse")
     
     st.markdown("---")
+    
     st.markdown("#### 🏥 Brand Pulse (Live Breakdown)")
     kpi_df = df.groupby('App_Name', observed=True).agg(
         Vol=('score', 'count'),
@@ -457,31 +461,41 @@ with tab_exec:
                          hover_data={'Count': True, 'Pct': ':.1f'})
         st.plotly_chart(dark_chart(fig_len), use_container_width=True, key="exec_len")
 
-# === TAB 2: DRIVERS & BARRIERS ===
+# === TAB 2: DRIVERS & BARRIERS (TABLES WITH BASE) ===
 with tab_drivers:
     st.markdown("### 🚦 Strategic Drivers & Barriers")
-    c_h1, c_h2 = st.columns(2)
-    pos_bases = df[df['score']>=4].groupby('App_Name', observed=True).size()
-    neg_bases = df[df['score']<=3].groupby('App_Name', observed=True).size()
     
-    with c_h1:
-        st.markdown("**🚀 Drivers (%)**")
-        if not pos_bases.empty and theme_cols:
-            valid = [t for t in theme_cols if t in df.columns]
-            p_data = df[df['score']>=4].groupby('App_Name', observed=True)[valid].sum().T
-            p_pct = p_data.div(pos_bases, axis=1) * 100
-            p_pct['Avg'] = p_pct.mean(axis=1)
-            p_pct = p_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,} Reviews"), use_container_width=True, key="db_pos")
-    with c_h2:
-        st.markdown("**🛑 Barriers (%)**")
-        if not neg_bases.empty and theme_cols:
-            valid = [t for t in theme_cols if t in df.columns]
-            n_data = df[df['score']<=3].groupby('App_Name', observed=True)[valid].sum().T
-            n_pct = n_data.div(neg_bases, axis=1) * 100
-            n_pct['Avg'] = n_pct.mean(axis=1)
-            n_pct = n_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,} Reviews"), use_container_width=True, key="db_neg")
+    # 1. DRIVERS TABLE
+    st.markdown("#### 🚀 Drivers (4-5★)")
+    drivers_df = df[df['score'] >= 4]
+    df_d, top_d = build_brand_matrix(drivers_df, theme_cols, sel_brands)
+    if df_d is not None:
+        st.dataframe(
+            df_d.style
+            .background_gradient(cmap='Greens', subset=pd.IndexSlice[top_d, :], axis=None)
+            .format("{:.1f}", subset=pd.IndexSlice[top_d, :])
+            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :])
+            .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
+            use_container_width=True
+        )
+    else: st.info("No data.")
+    
+    st.markdown("---")
+    
+    # 2. BARRIERS TABLE
+    st.markdown("#### 🛑 Barriers (1-3★)")
+    barriers_df = df[df['score'] <= 3]
+    df_b, top_b = build_brand_matrix(barriers_df, theme_cols, sel_brands)
+    if df_b is not None:
+        st.dataframe(
+            df_b.style
+            .background_gradient(cmap='Reds', subset=pd.IndexSlice[top_b, :], axis=None)
+            .format("{:.1f}", subset=pd.IndexSlice[top_b, :])
+            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :])
+            .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
+            use_container_width=True
+        )
+    else: st.info("No data.")
 
     st.markdown("---")
     st.markdown("### 🧬 Theme Evolution (Brand Comparison)")
@@ -552,15 +566,23 @@ with tab_compare:
                 fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Overlap (%)")
                 st.plotly_chart(fig, use_container_width=True, key="h2h_radar")
 
-# === TAB 4: PERIOD MATRIX (FIXED) ===
+# === TAB 4: PERIOD MATRIX ===
 with tab_monthly:
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
+    c_m1, c_m2 = st.columns(2)
+    time_grain = c_m1.selectbox("Time Grain", ["Week", "Month", "Quarter", "Year"], index=1, key="m_time_grain")
+    time_lookback = c_m2.selectbox("Time Range", ["Last 7 Days", "Last 30 Days", "Last 90 Days", "Last 6 Months", "Last 12 Months", "All Time"], index=3, key="m_lookback")
     
-    # Only Time Grain (Time range uses global sidebar)
-    time_grain = st.selectbox("Time Grain", ["Week", "Month", "Quarter", "Year"], index=1, key="m_time_grain")
+    # Apply Lookback
+    max_date = df['at'].max()
+    if time_lookback == "Last 7 Days": start_date = max_date - timedelta(days=7)
+    elif time_lookback == "Last 30 Days": start_date = max_date - timedelta(days=30)
+    elif time_lookback == "Last 90 Days": start_date = max_date - timedelta(days=90)
+    elif time_lookback == "Last 6 Months": start_date = max_date - timedelta(days=180)
+    elif time_lookback == "Last 12 Months": start_date = max_date - timedelta(days=365)
+    else: start_date = df['at'].min()
     
-    # We use 'df' which is already filtered by sidebar dates
-    m_base = df.copy()
+    m_base = df[df['at'] >= start_date].copy()
     
     if time_grain == "Week":
         m_base['Period'] = m_base['at'].dt.strftime('%Y-W%V')
@@ -659,16 +681,18 @@ with tab_ai:
                 {"".join([f'<div style="margin-bottom:5px;">✦ {txt}</div>' for txt in insights])}
             </div>
             """, unsafe_allow_html=True)
-            
+    
+    st.markdown("---")
+    # AI Summary Only Here
     vol = len(df)
     avg_rating = df['score'].mean()
     html = f"""
     <div class='ai-insight-box'>
-        <div class='ai-header'>🤖 AI Analyst: Global Strategic Summary</div>
+        <div class='ai-header'>🤖 AI Analyst: Global Summary</div>
         <div class='ai-text'>
             • <b>Analysis Scope:</b> {vol:,} reviews across {len(sel_brands)} brands.<br>
             • <b>Overall Sentiment:</b> {avg_rating:.2f} ⭐ average rating.<br>
-            • <b>Focus Area:</b> Check the 'Period-Over-Period Matrix' for recent shifts in driver intensity.
+            • <b>Observation:</b> Review the Period Matrix to identify if recent drops in CSAT correlate with specific barriers like 'Hidden Charges' or 'Tech Issues'.
         </div>
     </div>
     """
