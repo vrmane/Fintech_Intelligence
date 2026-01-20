@@ -10,6 +10,7 @@ from collections import Counter
 import re
 from supabase import create_client, Client
 from streamlit_lottie import st_lottie
+from datetime import timedelta
 
 # ==========================================
 # 1. PAGE CONFIG & STRATEGIC STYLING
@@ -277,6 +278,7 @@ with st.sidebar:
     st.success(f"🟢 Live: {len(df_raw):,} Rows")
     st.markdown("---")
     
+    # Range is applied globally, but Tab 4 has its own override if needed
     min_d, max_d = df_raw['at'].min().date(), df_raw['at'].max().date()
     date_range = st.date_input("Period", [min_d, max_d], min_value=min_d, max_value=max_d)
     
@@ -318,12 +320,11 @@ filter_desc = f"{len(sel_brands)} Brands"
 st.markdown(generate_global_summary(df, theme_cols, filter_desc), unsafe_allow_html=True)
 
 tab_exec, tab_drivers, tab_compare, tab_monthly, tab_trends, tab_text, tab_ai = st.tabs([
-    "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Monthly Report (%)", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
+    "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Period-Over-Period Matrix", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
 ])
 
 # === TAB 1: BOARDROOM ===
 with tab_exec:
-    # KPI Row
     curr_vol, delta_vol = calculate_delta(df, 'score', 'count')
     curr_csat, delta_csat = calculate_delta(df, 'score', 'mean')
     k1, k2, k3, k4 = st.columns(4)
@@ -338,7 +339,6 @@ with tab_exec:
     
     st.markdown("---")
     
-    # Brand Pulse
     st.markdown("#### 🏥 Brand Pulse (Live Breakdown)")
     kpi_df = df.groupby('App_Name').agg(
         Vol=('score', 'count'),
@@ -361,25 +361,36 @@ with tab_exec:
     st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
-        bs = df.groupby('App_Name').agg(
-            Vol=('score','count'), CSAT=('score','mean'),
-            One=('score', lambda x: (x==1).sum()), Five=('score', lambda x: (x==5).sum())
-        ).reset_index()
-        bs['NPS'] = ((bs['Five'] - bs['One'])/bs['Vol']*100).round(1)
-        fig_mtx = px.scatter(bs, x="CSAT", y="NPS", size="Vol", color="App_Name", text="App_Name", 
-                         title="Brand Matrix (Size=Volume)", height=400,
-                         hover_data={"Vol": True, "CSAT": ":.2f", "NPS": ":.1f"})
-        fig_mtx.update_traces(textposition='top center')
-        st.plotly_chart(dark_chart(fig_mtx), use_container_width=True, key="exec_matrix")
+        st.markdown("#### 🏆 Market Share")
+        fig_don = px.pie(kpi_df, values='Vol', names='App_Name', hole=0.4, title="Volume Share by Brand")
+        fig_don.update_traces(textposition='inside', textinfo='percent+label')
+        st.plotly_chart(dark_chart(fig_don), use_container_width=True, key="exec_don")
     with c2:
+        st.markdown("#### 🎯 Quality vs. Quantity")
+        fig_scat = px.scatter(kpi_df, x="CSAT", y="NPS Proxy", size="Vol", color="App_Name", text="App_Name", title="Strategic Positioning")
+        fig_scat.update_traces(textposition='top center')
+        st.plotly_chart(dark_chart(fig_scat), use_container_width=True, key="exec_scat")
+
+    c3, c4 = st.columns(2)
+    with c3:
+        st.markdown("#### 📊 Sentiment Mix")
         sent_counts = df.groupby(['App_Name', 'Sentiment_Label']).size().reset_index(name='Count')
-        total_counts = sent_counts.groupby('App_Name')['Count'].transform('sum')
-        sent_counts['Pct'] = (sent_counts['Count'] / total_counts) * 100
+        tot = sent_counts.groupby('App_Name')['Count'].transform('sum')
+        sent_counts['Pct'] = (sent_counts['Count'] / tot) * 100
         fig_stack = px.bar(sent_counts, x="App_Name", y="Pct", color="Sentiment_Label", 
                            color_discrete_map={'Positive': '#10b981', 'Neutral': '#64748b', 'Negative': '#ef4444'},
-                           title="Sentiment Ratio (%)", height=400, text_auto='.0f',
+                           title="Sentiment Ratio (%)", text_auto='.0f',
                            hover_data={'Count': True, 'Pct': ':.1f'})
         st.plotly_chart(dark_chart(fig_stack), use_container_width=True, key="exec_stack")
+    with c4:
+        st.markdown("#### 📝 Engagement Depth")
+        len_counts = df.groupby(['App_Name', 'length_bucket']).size().reset_index(name='Count')
+        l_tot = len_counts.groupby('App_Name')['Count'].transform('sum')
+        len_counts['Pct'] = (len_counts['Count'] / l_tot) * 100
+        fig_len = px.bar(len_counts, x="App_Name", y="Pct", color="length_bucket", barmode='group',
+                         title="Brief vs Detailed (%)", text_auto='.0f',
+                         hover_data={'Count': True, 'Pct': ':.1f'})
+        st.plotly_chart(dark_chart(fig_len), use_container_width=True, key="exec_len")
 
 # === TAB 2: DRIVERS & BARRIERS ===
 with tab_drivers:
@@ -435,6 +446,18 @@ with tab_drivers:
                 fig_evo.update_traces(textposition="top center", texttemplate='%{text:.1f}')
                 st.plotly_chart(dark_chart(fig_evo), use_container_width=True, key="db_evo_chart")
 
+    c_t1, c_t2 = st.columns(2)
+    with c_t1:
+        st.markdown("#### 📅 MoM Growth %")
+        mom_matrix = calculate_growth_matrix(trend_src, theme_cols, 'Month', sel_brands)
+        if not mom_matrix.empty:
+            st.plotly_chart(px.imshow(mom_matrix, text_auto='.1f', aspect="auto", color_continuous_scale='RdBu', color_continuous_midpoint=0), use_container_width=True, key="mom_matrix")
+    with c_t2:
+        st.markdown("#### ⚡ WoW Growth %")
+        wow_matrix = calculate_growth_matrix(trend_src, theme_cols, 'Week', sel_brands)
+        if not wow_matrix.empty:
+            st.plotly_chart(px.imshow(wow_matrix, text_auto='.1f', aspect="auto", color_continuous_scale='RdBu', color_continuous_midpoint=0), use_container_width=True, key="wow_matrix")
+
 # === TAB 3: HEAD TO HEAD ===
 with tab_compare:
     c1, c2 = st.columns(2)
@@ -464,67 +487,91 @@ with tab_compare:
                 fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Overlap (%)")
                 st.plotly_chart(fig, use_container_width=True, key="h2h_radar")
 
-# === TAB 4: MONTHLY REPORT (NEW) ===
+# === TAB 4: MONTHLY REPORT (NEW DYNAMIC) ===
 with tab_monthly:
-    st.markdown("### 📅 Monthly NET Report (Percentage Only)")
+    st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
     
-    # Logic to build the matrix: Rows=Themes, Cols=Month>Brand
-    report_type = st.radio("Report Type", ["Drivers (4-5★)", "Barriers (1-3★)"], horizontal=True, key="rep_type")
+    # 1. Filters
+    c_m1, c_m2, c_m3 = st.columns(3)
+    rep_type = c_m1.radio("Focus", ["Drivers (4-5★)", "Barriers (1-3★)"], horizontal=True, key="m_rep_type")
     
-    if report_type == "Drivers (4-5★)":
-        rep_df = df[df['score'] >= 4]
+    time_grain = c_m2.selectbox("Time Grain", ["Week", "Month", "Quarter", "Year"], index=1, key="m_time_grain")
+    
+    time_lookback = c_m3.selectbox("Time Range", ["Last 7 Days", "Last 30 Days", "Last 90 Days", "Last 6 Months", "Last 12 Months", "All Time"], index=3, key="m_lookback")
+    
+    # 2. Filter Logic
+    if rep_type == "Drivers (4-5★)":
+        m_df = df[df['score'] >= 4]
         color_scale = 'Greens'
     else:
-        rep_df = df[df['score'] <= 3]
+        m_df = df[df['score'] <= 3]
         color_scale = 'Reds'
         
-    if not rep_df.empty and theme_cols:
-        # 1. Get available months
-        months = sorted(rep_df['Month'].unique())[-6:] # Last 6 months
+    # Apply Lookback
+    max_date = df['at'].max()
+    if time_lookback == "Last 7 Days":
+        start_date = max_date - timedelta(days=7)
+    elif time_lookback == "Last 30 Days":
+        start_date = max_date - timedelta(days=30)
+    elif time_lookback == "Last 90 Days":
+        start_date = max_date - timedelta(days=90)
+    elif time_lookback == "Last 6 Months":
+        start_date = max_date - timedelta(days=180)
+    elif time_lookback == "Last 12 Months":
+        start_date = max_date - timedelta(days=365)
+    else:
+        start_date = df['at'].min()
         
-        # 2. Filter data for these months
-        rep_df = rep_df[rep_df['Month'].isin(months)]
+    m_df = m_df[m_df['at'] >= start_date]
+    
+    # 3. Group by Time Grain
+    if time_grain == "Week":
+        m_df['Period'] = m_df['at'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-W%U'))
+    elif time_grain == "Month":
+        m_df['Period'] = m_df['at'].dt.to_period('M').astype(str)
+    elif time_grain == "Quarter":
+        m_df['Period'] = m_df['at'].dt.to_period('Q').astype(str)
+    else:
+        m_df['Period'] = m_df['at'].dt.to_period('Y').astype(str)
         
-        # 3. Calculate Base per Brand-Month
-        base_matrix = rep_df.groupby(['Month', 'App_Name']).size().unstack(fill_value=0)
+    # 4. Build Matrix
+    if not m_df.empty and theme_cols:
+        # Get Sorted Periods
+        periods = sorted(m_df['Period'].unique())
         
-        # 4. Calculate Theme Counts per Brand-Month
-        # We need a long format: Theme | Month | Brand | Count
-        # Then Pivot to: Theme | (Month, Brand)
+        # Calculate Base per Cell (Brand x Period)
+        base_matrix = m_df.groupby(['Period', 'App_Name']).size().unstack(fill_value=0)
         
-        # Melt themes? No, group and sum is faster
-        valid = [t for t in theme_cols if t in rep_df.columns]
+        # Get Top Themes
+        valid = [t for t in theme_cols if t in m_df.columns]
+        top_m_themes = m_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
         
-        # Identify Top 20 Themes globally for this view
-        top_global = rep_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
-        
-        # Build Matrix
-        matrix_data = []
-        for theme in top_global:
+        # Construct DataFrame
+        matrix_rows = []
+        for theme in top_m_themes:
             row = {'Theme': theme}
-            for m in months:
+            for p in periods:
                 for b in sel_brands:
-                    # Get count
-                    mask = (rep_df['Month'] == m) & (rep_df['App_Name'] == b)
-                    count = rep_df[mask][theme].sum()
-                    base = base_matrix.loc[m, b] if (m in base_matrix.index and b in base_matrix.columns) else 0
+                    if b not in base_matrix.columns: continue
+                    # Count matches
+                    mask = (m_df['Period'] == p) & (m_df['App_Name'] == b)
+                    count = m_df[mask][theme].sum()
+                    base = base_matrix.loc[p, b]
+                    val = (count / base * 100) if base > 0 else 0
                     
-                    pct = (count / base * 100) if base > 0 else 0
-                    col_name = f"{m} | {b}"
-                    row[col_name] = pct
-            matrix_data.append(row)
+                    col_name = f"{p} | {b}"
+                    row[col_name] = val
+            matrix_rows.append(row)
             
-        final_df = pd.DataFrame(matrix_data).set_index('Theme')
+        final_m_df = pd.DataFrame(matrix_rows).set_index('Theme')
         
-        # Visualization
-        # Heatmap is tricky with multi-level columns in Plotly express directly
-        # So we just show the dataframe with formatting
-        st.markdown(f"**Top 20 {report_type} Trends** (Values are % of Base)")
-        st.dataframe(final_df.style.background_gradient(cmap=color_scale, axis=None).format("{:.1f}"), use_container_width=True)
+        st.markdown(f"**Top 20 {rep_type} by {time_grain}** (Values are %)")
+        st.dataframe(final_m_df.style.background_gradient(cmap=color_scale, axis=None).format("{:.1f}"), use_container_width=True)
         
-        # Show Bases for Reference
-        st.markdown("**Base Sizes (N):**")
-        st.dataframe(base_matrix.T, use_container_width=True)
+        with st.expander("Show Base Sizes (N)"):
+            st.dataframe(base_matrix.T, use_container_width=True)
+    else:
+        st.info("No data for selected range.")
 
 # === TAB 5: TRENDS ===
 with tab_trends:
