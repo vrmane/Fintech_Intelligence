@@ -70,6 +70,8 @@ st.markdown("""
         }
         hr { margin: 2em 0; border-color: #334155; }
         h1, h2, h3, h4 { color: #f8fafc; font-family: 'Inter', sans-serif; }
+        /* Caption Styling */
+        .stCaption { font-size: 0.9em; color: #94a3b8; font-style: italic; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -271,7 +273,7 @@ def generate_global_summary(df, theme_cols, current_filters):
     if df.empty: return "No data."
     avg_rating = df['score'].mean()
     vol = len(df)
-    leader = df.groupby('App_Name')['score'].mean().idxmax()
+    leader = df.groupby('App_Name', observed=True)['score'].mean().idxmax()
     
     pos_df = df[df['score'] >= 4]
     top_driver = "N/A"
@@ -386,7 +388,7 @@ with st.sidebar:
     min_d, max_d = df_raw['at'].min().date(), df_raw['at'].max().date()
     date_range = st.date_input("Period", [min_d, max_d], min_value=min_d, max_value=max_d)
     
-    all_brands = sorted(df_raw['App_Name'].unique().tolist())
+    all_brands = sorted(df_raw['App_Name'].dropna().unique().tolist())
     sel_brands = st.multiselect("Brands", all_brands, default=all_brands)
     
     st.markdown("### 📊 Metrics")
@@ -436,15 +438,23 @@ with tab_exec:
     curr_vol, delta_vol = calculate_delta(df, 'score', 'count')
     curr_csat, delta_csat = calculate_delta(df, 'score', 'mean')
     k1, k2, k3, k4 = st.columns(4)
-    with k1: st.metric("Total Volume", f"{len(df):,}", delta=f"{delta_vol:.1f}% MoM")
-    with k2: st.metric("Avg Rating", f"{df['score'].mean():.2f} ⭐", delta=f"{delta_csat:.2f} pts MoM")
+    with k1: 
+        st.metric("Total Volume", f"{len(df):,}", delta=f"{delta_vol:.1f}% MoM")
+        st.caption("Total reviews matching current filters.")
+    with k2: 
+        st.metric("Avg Rating", f"{df['score'].mean():.2f} ⭐", delta=f"{delta_csat:.2f} pts MoM")
+        st.caption("Weighted average score (1-5 stars).")
     prom = len(df[df['score']==5])
     det = len(df[df['score']<=3])
     vol = len(df)
     nps = ((prom - det) / vol * 100) if vol > 0 else 0
-    with k3: st.metric("NPS Proxy", f"{nps:.0f}")
+    with k3: 
+        st.metric("NPS Proxy", f"{nps:.0f}")
+        st.caption("Net Promoter Score: (5★ - 1-3★) / Total.")
     risk = (len(df[df['score']==1]) / vol * 100) if vol > 0 else 0
-    with k4: st.metric("Critical Risk", f"{risk:.1f}%", delta="1-Star %", delta_color="inverse")
+    with k4: 
+        st.metric("Critical Risk", f"{risk:.1f}%", delta="1-Star %", delta_color="inverse")
+        st.caption("Percentage of 1-star reviews.")
     
     st.markdown("---")
     st.markdown("#### 🏥 Brand Pulse (Live Breakdown)")
@@ -466,15 +476,18 @@ with tab_exec:
     if deltas:
         delta_df = pd.DataFrame(deltas)
         final_kpi = kpi_df.merge(delta_df, on='App_Name')[['App_Name', 'Vol', 'Vol Delta', 'CSAT', 'CSAT Delta', 'NPS Proxy']]
+        st.caption("Comparison of key metrics by brand. Darker green indicates better performance.")
         st.dataframe(final_kpi.style.background_gradient(subset=['CSAT'], cmap='Greens'), use_container_width=True, hide_index=True)
 
     st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
+        st.caption("How is the review volume distributed across brands?")
         fig_don = px.pie(kpi_df, values='Vol', names='App_Name', hole=0.4, title="Volume Share by Brand")
         fig_don.update_traces(textposition='inside', textinfo='percent+label')
         st.plotly_chart(dark_chart(fig_don), use_container_width=True, key="exec_don")
     with c2:
+        st.caption("Strategic Map: Top Right = High Volume + High Satisfaction (Leader).")
         fig_scat = px.scatter(kpi_df, x="CSAT", y="NPS Proxy", size="Vol", color="App_Name", text="App_Name", title="Strategic Positioning")
         fig_scat.update_traces(textposition='top center')
         st.plotly_chart(dark_chart(fig_scat), use_container_width=True, key="exec_scat")
@@ -484,6 +497,7 @@ with tab_exec:
         sent_counts = df.groupby(['App_Name', 'Sentiment_Label'], observed=True).size().reset_index(name='Count')
         tot = sent_counts.groupby('App_Name')['Count'].transform('sum')
         sent_counts['Pct'] = (sent_counts['Count'] / tot) * 100
+        st.caption("What is the sentiment split (Positive vs. Negative) for each brand?")
         fig_stack = px.bar(sent_counts, x="App_Name", y="Pct", color="Sentiment_Label", 
                            color_discrete_map={'Positive': '#10b981', 'Neutral': '#64748b', 'Negative': '#ef4444'},
                            title="Sentiment Ratio (%)", text_auto='.0f',
@@ -493,6 +507,7 @@ with tab_exec:
         len_counts = df.groupby(['App_Name', 'length_bucket'], observed=True).size().reset_index(name='Count')
         l_tot = len_counts.groupby('App_Name')['Count'].transform('sum')
         len_counts['Pct'] = (len_counts['Count'] / l_tot) * 100
+        st.caption("Are users leaving detailed feedback or just star ratings?")
         fig_len = px.bar(len_counts, x="App_Name", y="Pct", color="length_bucket", barmode='group',
                          title="Brief vs Detailed (%)", text_auto='.0f',
                          hover_data={'Count': True, 'Pct': ':.1f'})
@@ -503,6 +518,7 @@ with tab_drivers:
     st.markdown("### 🚦 Strategic Drivers & Barriers")
     
     st.markdown("#### 🚀 Drivers (4-5★)")
+    st.caption("Themes most frequently associated with positive reviews. Darker green = Higher frequency.")
     drivers_df = df[df['score'] >= 4]
     df_d, top_d = build_brand_matrix(drivers_df, theme_cols, sel_brands)
     if df_d is not None:
@@ -518,6 +534,7 @@ with tab_drivers:
     st.markdown("---")
     
     st.markdown("#### 🛑 Barriers (1-3★)")
+    st.caption("Themes most frequently associated with negative reviews. Darker red = Higher pain point.")
     barriers_df = df[df['score'] <= 3]
     df_b, top_b = build_brand_matrix(barriers_df, theme_cols, sel_brands)
     if df_b is not None:
@@ -532,6 +549,7 @@ with tab_drivers:
 
     st.markdown("---")
     st.markdown("### 🧬 Theme Evolution (Brand Comparison)")
+    st.caption("Select a theme below to see how its frequency changes over time across brands.")
     evo_type = st.radio("Category", ["Drivers (Positive)", "Barriers (Negative)"], horizontal=True, key="db_evo_type")
     trend_src = df[df['score'] >= 4] if "Positive" in evo_type else df[df['score'] <= 3]
 
@@ -596,6 +614,7 @@ with tab_compare:
         
         # 2. Battleground
         st.markdown("#### ⚔️ The Battleground: Theme Dominance")
+        st.caption(f"Bars to the right (Green) favor {b1}. Bars to the left (Blue) favor {b2}.")
         bg_df = build_battleground(df, b1, b2, theme_cols)
         if bg_df is not None:
             fig_bg = go.Figure()
@@ -619,6 +638,7 @@ with tab_compare:
         
         # 3. Comparative Trend
         st.markdown("#### 📈 CSAT Velocity Track")
+        st.caption("How have the ratings compared over time?")
         t_view_h2h = st.radio("Grain", ["Month", "Week"], horizontal=True, key="h2h_grain")
         t_col_h2h = 'Month' if t_view_h2h == "Month" else 'Week'
         
@@ -629,6 +649,7 @@ with tab_compare:
 # === TAB 4: PERIOD MATRIX ===
 with tab_monthly:
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
+    st.caption("View how theme intensity changes over time. First row is the Base (N) count.")
     c_m1, c_m2 = st.columns(2)
     time_grain = c_m1.selectbox("Time Grain", ["Week", "Month", "Quarter", "Year"], index=1, key="m_time_grain")
     time_lookback = c_m2.selectbox("Time Range", ["Last 7 Days", "Last 30 Days", "Last 90 Days", "Last 6 Months", "Last 12 Months", "All Time"], index=3, key="m_lookback")
@@ -697,11 +718,13 @@ with tab_trends:
             csat['Week'] = csat['Week'].astype(str)
         c_tr1, c_tr2 = st.columns(2)
         with c_tr1:
+            st.caption("How is customer satisfaction trending over time?")
             fig_csat = px.line(csat, x=t_col, y='CSAT', color='App_Name', markers=True, title="CSAT Trend", 
                                text='CSAT', hover_data={'Base':True, 'CSAT':':.2f'})
             fig_csat.update_traces(textposition="top center", texttemplate='%{text:.2f}')
             st.plotly_chart(dark_chart(fig_csat), use_container_width=True, key="tr_csat")
         with c_tr2:
+            st.caption("How is the market share (volume) evolving?")
             fig_sov = px.area(trend, x=t_col, y='SoV', color='App_Name', title="Share of Voice (%)", 
                               hover_data={'Count':True, 'SoV':':.1f'})
             st.plotly_chart(dark_chart(fig_sov), use_container_width=True, key="tr_vol")
@@ -718,12 +741,14 @@ with tab_text:
         if not t_df.empty:
             base = len(t_df)
             words_df = get_top_words_pct(t_df['Review_Text'], base)
+            st.caption(f"Most frequent terms in {txt_type} reviews (Base: {base}).")
             fig = px.bar(words_df, x='Pct', y='Word', orientation='h', 
-                         title=f"Top Words (Base: {base})", labels={'Pct':'% of Reviews'},
+                         title=f"Top Words", labels={'Pct':'% of Reviews'},
                          text='Pct', hover_data={'Count':True, 'Pct':':.1f'})
             fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
             st.plotly_chart(dark_chart(fig), use_container_width=True, key="txt_bar")
     with c2:
+        st.caption("Distribution of review lengths (Are users writing essays or one-liners?)")
         fig = px.histogram(df, x='char_count', color='App_Name', nbins=50, title="Review Length Dist.")
         st.plotly_chart(dark_chart(fig), use_container_width=True, key="txt_hist")
 
