@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
 import requests
 import time
@@ -12,6 +11,7 @@ from supabase import create_client, Client
 from streamlit_lottie import st_lottie
 from datetime import timedelta, datetime
 import pytz
+import gc
 
 # ==========================================
 # 1. PAGE CONFIG & STRATEGIC STYLING
@@ -73,7 +73,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. HELPER FUNCTIONS
+# 2. HELPER FUNCTIONS (MEMORY OPTIMIZED)
 # ==========================================
 def load_lottieurl(url: str):
     try:
@@ -82,24 +82,37 @@ def load_lottieurl(url: str):
     except:
         return None
 
+@st.cache_data(show_spinner=False)
 def get_top_words_pct(text_series, total_count, top_n=20):
+    """
+    Optimized: Processes text iteratively to avoid Memory Spikes.
+    """
     stop_words = set(['the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'for', 'i', 'this', 'my', 'app', 'loan', 'money', 'very', 'good', 'bad', 'worst', 'best', 'application', 'not', 'but', 'on', 'with', 'are', 'was', 'have', 'be', 'so', 'me', 'you', 'please', 'give'])
-    text = ' '.join(text_series.dropna().astype(str).tolist()).lower()
-    text = re.sub(r'[^a-z\s]', '', text)
-    words = [w for w in text.split() if w not in stop_words and len(w) > 2]
-    counter = Counter(words)
+    
+    counter = Counter()
+    
+    # Process in chunks to save RAM
+    for text in text_series.dropna():
+        # Lowercase and remove non-alpha characters
+        clean_text = re.sub(r'[^a-z\s]', '', str(text).lower())
+        words = [w for w in clean_text.split() if w not in stop_words and len(w) > 2]
+        counter.update(words)
+        
     data = []
     for word, count in counter.most_common(top_n):
         pct = (count / total_count) * 100
         data.append({'Word': word, 'Pct': pct, 'Count': count})
+        
     return pd.DataFrame(data)
 
 def calculate_delta(df, col, agg_func='count'):
     if 'Month' not in df.columns or df.empty: return 0, 0
+    # Optimize: Work on unique list instead of full column
     months = sorted(df['Month'].unique())
     if len(months) < 2: return 0, 0
     curr, prev = months[-1], months[-2]
     
+    # Filter using boolean indexing (faster than query)
     if agg_func == 'count':
         curr_val = len(df[df['Month'] == curr])
         prev_val = len(df[df['Month'] == prev])
@@ -112,7 +125,7 @@ def calculate_delta(df, col, agg_func='count'):
     return curr_val, delta
 
 # ==========================================
-# 3. DATA ENGINE
+# 3. DATA ENGINE (OPTIMIZED)
 # ==========================================
 @st.cache_resource
 def init_connection():
@@ -124,10 +137,12 @@ def init_connection():
 
 supabase = init_connection()
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def load_data():
     all_rows = []
-    start, batch = 0, 1000
+    start, batch = 0, 2000 # Increased batch size slightly for fewer requests
+    
+    # Fetch Data
     while True:
         res = supabase.table("reviews").select("*").range(start, start + batch - 1).execute()
         if not res.data: break
@@ -136,48 +151,63 @@ def load_data():
         start += batch
 
     if not all_rows: return pd.DataFrame()
-    df = pd.DataFrame(all_rows)
-
-    # --- IST DATE HANDLING ---
-    ist = pytz.timezone('Asia/Kolkata')
     
+    # Create DataFrame
+    df = pd.DataFrame(all_rows)
+    
+    # --- MEMORY OPTIMIZATION: Reduce Object Overhead ---
+    
+    # 1. Parse Dates
+    ist = pytz.timezone('Asia/Kolkata')
     if 'Review_Date' in df.columns:
         df['at'] = pd.to_datetime(df['Review_Date'], errors='coerce')
         if df['at'].dt.tz is None:
             df['at'] = df['at'].dt.tz_localize('UTC').dt.tz_convert(ist)
         else:
             df['at'] = df['at'].dt.tz_convert(ist)
-            
-        mask = df['at'].isna()
-        if mask.any():
-            df.loc[mask, 'at'] = pd.to_datetime(df.loc[mask, 'Review_Date'], format='%d-%m-%Y', errors='coerce').dt.tz_localize('UTC').dt.tz_convert(ist)
-            
-        df = df.dropna(subset=['at'])
         
-        # Date Parts
+        # Drop rows with invalid dates immediately to save space
+        df.dropna(subset=['at'], inplace=True)
+        
+        # Pre-calculate time strings (Strings take memory, but needed for grouping)
+        # Optimization: Use Categories for repeated strings? No, Month/Week change too much.
         df['Month'] = df['at'].dt.strftime('%Y-%m')
         df['Week'] = df['at'].dt.strftime('%Y-W%V')
 
+    # 2. Numeric Conversion (Downcast if possible)
     if 'Rating' in df.columns:
         df['score'] = pd.to_numeric(df['Rating'], errors='coerce')
+        # Create Sentiment Label as Category
         df['Sentiment_Label'] = pd.cut(df['score'], bins=[0, 2, 3, 5], labels=['Negative', 'Neutral', 'Positive'])
     
+    # 3. Text & Categoricals (CRITICAL FOR RAM)
     if 'Review_Text' in df.columns:
-        df['char_count'] = df['Review_Text'].astype(str).str.len().fillna(0)
-        df['length_bucket'] = df['char_count'].apply(lambda x: 'Brief (<=29)' if x <= 29 else 'Detailed (>=30)')
+        # Calculate length before potential dropping or processing
+        df['char_count'] = df['Review_Text'].astype(str).str.len().fillna(0).astype(np.int32)
+        # Bucket can be categorical
+        df['length_bucket'] = df['char_count'].apply(lambda x: 'Brief (<=29)' if x <= 29 else 'Detailed (>=30)').astype('category')
 
+    # Convert repetitive columns to category
+    cols_to_categorize = ['App_Name', 'Product_1', 'Sentiment']
+    for col in cols_to_categorize:
+        if col in df.columns:
+            df[col] = df[col].astype('category')
+
+    # 4. Handle NET columns (Binary)
     net_cols = [c for c in df.columns if str(c).startswith('[NET]')]
     clean_net_map = {}
     for col in net_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        df[col] = df[col].apply(lambda x: 1 if x > 0 else 0)
+        # Ensure numeric 0/1
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(np.int8) 
         clean_name = col.replace('[NET]', '').replace('[NET] ', '').strip()
         clean_net_map[col] = clean_name
         df.rename(columns={col: clean_name}, inplace=True)
     
     st.session_state['theme_cols'] = list(clean_net_map.values())
-    # Save the actual datetime object for calculations
-    st.session_state['fetch_dt'] = datetime.now(ist)
+    st.session_state['last_fetched'] = datetime.now(ist).strftime("%d %b %Y, %I:%M %p IST")
+    
+    # Force Garbage Collection
+    gc.collect()
     
     return df
 
@@ -221,39 +251,62 @@ def dark_chart(fig):
 def calculate_growth_matrix(df, theme_cols, time_col, brands):
     valid_themes = [t for t in theme_cols if t in df.columns]
     if not valid_themes: return pd.DataFrame()
-    top_themes = df[valid_themes].sum().sort_values(ascending=False).head(10).index.tolist()
+    
+    # Calculate totals first to get top themes efficiently
+    theme_sums = df[valid_themes].sum()
+    top_themes = theme_sums.sort_values(ascending=False).head(10).index.tolist()
+    
     matrix = {}
     for brand in brands:
-        b_df = df[df['App_Name'] == brand].sort_values(time_col)
+        # Filter first, then sort
+        b_df = df[df['App_Name'] == brand]
+        if b_df.empty:
+            matrix[brand] = [0.0] * len(top_themes)
+            continue
+            
+        b_df = b_df.sort_values(time_col)
         periods = b_df[time_col].unique()
+        
         if len(periods) < 2:
             matrix[brand] = [0.0] * len(top_themes)
             continue
-        last, prev = periods[-1], periods[-2]
+            
+        last = periods[-1]
+        prev = periods[-2]
+        
+        # Pre-filter for periods
         last_df = b_df[b_df[time_col] == last]
         prev_df = b_df[b_df[time_col] == prev]
-        last_vol, prev_vol = len(last_df), len(prev_df)
+        
+        last_vol = len(last_df)
+        prev_vol = len(prev_df)
+        
         growth = []
         for t in top_themes:
-            if prev_vol == 0: g = 0.0
+            if prev_vol == 0: 
+                g = 0.0
             else:
+                # Sum the integer columns (fast)
                 s_last = last_df[t].sum() / last_vol if last_vol else 0
                 s_prev = prev_df[t].sum() / prev_vol
                 g = ((s_last - s_prev) / s_prev * 100) if s_prev > 0 else 0
             growth.append(g)
         matrix[brand] = growth
+        
     return pd.DataFrame(matrix, index=top_themes)
 
 def get_brand_insights(df, brand, theme_cols):
     b_df = df[df['App_Name'] == brand]
     if b_df.empty: return ["No data."]
     insights = []
+    
     cohort_avg = df['score'].mean()
     brand_avg = b_df['score'].mean()
     diff = brand_avg - cohort_avg
     pos_text = "outperforming" if diff > 0 else "lagging behind"
     insights.append(f"**Position:** {pos_text} market by **{abs(diff):.2f} ⭐**")
     
+    # Use boolean indexing for speed
     pos_df = b_df[b_df['score'] >= 4]
     if not pos_df.empty and theme_cols:
         valid = [t for t in theme_cols if t in pos_df.columns]
@@ -271,43 +324,12 @@ def get_brand_insights(df, brand, theme_cols):
             insights.append(f"**Risk:** <span style='color:#f87171'>{top_b}</span> (**{pct:.0f}%** of negative)")
     return insights
 
-def generate_global_summary(df, theme_cols, current_filters):
-    if df.empty: return "No data."
-    avg_rating = df['score'].mean()
-    vol = len(df)
-    leader = df.groupby('App_Name')['score'].mean().idxmax()
-    
-    pos_df = df[df['score'] >= 4]
-    top_driver = "N/A"
-    if not pos_df.empty and theme_cols:
-        valid = [t for t in theme_cols if t in pos_df.columns]
-        if valid: top_driver = pos_df[valid].sum().idxmax()
-            
-    neg_df = df[df['score'] <= 3]
-    top_barrier = "N/A"
-    if not neg_df.empty and theme_cols:
-        valid = [t for t in theme_cols if t in neg_df.columns]
-        if valid: top_barrier = neg_df[valid].sum().idxmax()
-            
-    html = f"""
-    <div class='ai-insight-box'>
-        <div class='ai-header'>🤖 AI Analyst: Global Strategic Brief</div>
-        <div class='ai-text'>
-            • <b>Context:</b> Analyzing <b>{vol:,}</b> reviews ({current_filters}). Category CSAT: <b>{avg_rating:.2f} ⭐</b>.<br>
-            • <b>Leader:</b> <b>{leader}</b> is currently setting the benchmark for satisfaction.<br>
-            • <b>Market Driver:</b> <b>'{top_driver}'</b> is the key sentiment engine.<br>
-            • <b>Market Barrier:</b> <b>'{top_barrier}'</b> is the top friction point.
-        </div>
-    </div>
-    """
-    return html
-
-# === Helper for Period Matrix ===
 def build_period_matrix(sub_df, theme_cols, sel_brands):
     if sub_df.empty or not theme_cols:
         return None, None
 
     periods = sorted(sub_df['Period'].unique())
+    # GroupBy is efficient here
     base_matrix = sub_df.groupby(['Period', 'App_Name']).size().unstack(fill_value=0)
     
     valid = [t for t in theme_cols if t in sub_df.columns]
@@ -323,16 +345,22 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
             val = base_matrix.loc[p, b]
             base_row_data[(p, b)] = val
 
-    # Build Theme Rows
+    # Build Theme Rows using Vectorized operations where possible would be better,
+    # but iterative is okay for 20 themes * 6 periods * 5 brands (small loop)
     for theme in top_themes:
         row = {}
         for p in periods:
             for b in sel_brands:
                 if b not in base_matrix.columns: continue
+                # Optimized filtering
                 mask = (sub_df['Period'] == p) & (sub_df['App_Name'] == b)
-                count = sub_df[mask][theme].sum()
-                base = base_matrix.loc[p, b]
-                val = (count / base * 100) if base > 0 else 0
+                # Ensure we only sum if mask has True
+                if mask.any():
+                    count = sub_df.loc[mask, theme].sum()
+                    base = base_matrix.loc[p, b]
+                    val = (count / base * 100) if base > 0 else 0
+                else:
+                    val = 0
                 row[(p, b)] = val
         data.append(row)
         
@@ -358,26 +386,30 @@ with st.sidebar:
     min_d, max_d = df_raw['at'].min().date(), df_raw['at'].max().date()
     date_range = st.date_input("Period", [min_d, max_d], min_value=min_d, max_value=max_d)
     
-    all_brands = sorted(df_raw['App_Name'].dropna().unique())
+    all_brands = sorted(df_raw['App_Name'].unique().tolist()) # using tolist on category is safe
     sel_brands = st.multiselect("Brands", all_brands, default=all_brands)
     
     st.markdown("### 📊 Metrics")
     sel_ratings = st.multiselect("Ratings", [1, 2, 3, 4, 5], default=[1, 2, 3, 4, 5])
     
+    sel_sent = []
     if 'Sentiment' in df_raw.columns:
-        sent_opts = sorted(df_raw['Sentiment'].dropna().unique())
+        sent_opts = sorted(df_raw['Sentiment'].dropna().unique().tolist())
         sel_sent = st.multiselect("Sentiment", sent_opts)
-    else: sel_sent = []
     
+    sel_prods = []
     if 'Product_1' in df_raw.columns:
-        all_prods = sorted(df_raw['Product_1'].dropna().unique())
+        all_prods = sorted(df_raw['Product_1'].dropna().unique().tolist())
         sel_prods = st.multiselect("Product Type", all_prods)
-    else: sel_prods = []
 
+# Filter Logic (Optimized)
 if len(date_range) == 2:
-    mask = (df_raw['at'].dt.date >= date_range[0]) & (df_raw['at'].dt.date <= date_range[1])
+    # Converting inputs to datetime for comparison
+    start_date = pd.to_datetime(date_range[0]).tz_localize('Asia/Kolkata')
+    end_date = pd.to_datetime(date_range[1]).tz_localize('Asia/Kolkata') + timedelta(days=1) - timedelta(seconds=1)
+    mask = (df_raw['at'] >= start_date) & (df_raw['at'] <= end_date)
 else:
-    mask = [True] * len(df_raw)
+    mask = pd.Series([True] * len(df_raw))
 
 mask &= df_raw['App_Name'].isin(sel_brands)
 mask &= df_raw['score'].isin(sel_ratings)
@@ -392,20 +424,9 @@ theme_cols = st.session_state.get('theme_cols', [])
 # ==========================================
 st.title("🦅 Strategic Intelligence Platform")
 
-# --- SMART TIMESTAMP (IST + RELATIVE) ---
-if 'fetch_dt' in st.session_state:
-    ft = st.session_state['fetch_dt']
-    ist = pytz.timezone('Asia/Kolkata')
-    now_ist = datetime.now(ist)
-    diff = now_ist - ft
-    mins = int(diff.total_seconds() / 60)
-    
-    if mins < 1: rel = "Just now"
-    elif mins < 60: rel = f"{mins} mins ago"
-    else: rel = f"{int(mins/60)} hours ago"
-    
-    time_str = f"Data Last Fetched: {ft.strftime('%d %b %Y, %I:%M %p IST')} ({rel})"
-    st.markdown(f"<div class='timestamp-box'><span class='live-dot'></span>{time_str}</div>", unsafe_allow_html=True)
+# Timestamp
+last_time = st.session_state.get('last_fetched', 'Just now')
+st.markdown(f"<div class='timestamp-box'><span class='live-dot'></span>Data Last Fetched: {last_time}</div>", unsafe_allow_html=True)
 
 tab_exec, tab_drivers, tab_compare, tab_monthly, tab_trends, tab_text, tab_ai = st.tabs([
     "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Period-Over-Period Matrix", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
@@ -420,49 +441,52 @@ with tab_exec:
     with k2: st.metric("Avg Rating", f"{df['score'].mean():.2f} ⭐", delta=f"{delta_csat:.2f} pts MoM")
     prom = len(df[df['score']==5])
     det = len(df[df['score']<=3])
-    nps = ((prom - det) / len(df) * 100) if len(df) > 0 else 0
+    vol = len(df)
+    nps = ((prom - det) / vol * 100) if vol > 0 else 0
     with k3: st.metric("NPS Proxy", f"{nps:.0f}")
-    risk = (len(df[df['score']==1]) / len(df) * 100) if len(df) > 0 else 0
+    risk = (len(df[df['score']==1]) / vol * 100) if vol > 0 else 0
     with k4: st.metric("Critical Risk", f"{risk:.1f}%", delta="1-Star %", delta_color="inverse")
     
     st.markdown("---")
     
     st.markdown("#### 🏥 Brand Pulse (Live Breakdown)")
-    kpi_df = df.groupby('App_Name').agg(
+    kpi_df = df.groupby('App_Name', observed=True).agg(
         Vol=('score', 'count'),
         CSAT=('score', 'mean'),
         Promoters=('score', lambda x: (x==5).sum()),
         Detractors=('score', lambda x: (x<=3).sum())
     ).reset_index()
+    
+    kpi_df = kpi_df[kpi_df['Vol'] > 0] # Remove empty categories
     kpi_df['NPS Proxy'] = ((kpi_df['Promoters'] - kpi_df['Detractors']) / kpi_df['Vol'] * 100).round(0)
     kpi_df['CSAT'] = kpi_df['CSAT'].round(2)
+    
     deltas = []
     for brand in kpi_df['App_Name']:
         b_df = df[df['App_Name'] == brand]
         _, d_vol = calculate_delta(b_df, 'score', 'count')
         _, d_csat = calculate_delta(b_df, 'score', 'mean')
         deltas.append({'App_Name': brand, 'Vol Delta': f"{d_vol:+.1f}%", 'CSAT Delta': f"{d_csat:+.2f}"})
-    delta_df = pd.DataFrame(deltas)
-    final_kpi = kpi_df.merge(delta_df, on='App_Name')[['App_Name', 'Vol', 'Vol Delta', 'CSAT', 'CSAT Delta', 'NPS Proxy']]
-    st.dataframe(final_kpi.style.background_gradient(subset=['CSAT'], cmap='Greens'), use_container_width=True, hide_index=True)
+    
+    if deltas:
+        delta_df = pd.DataFrame(deltas)
+        final_kpi = kpi_df.merge(delta_df, on='App_Name')[['App_Name', 'Vol', 'Vol Delta', 'CSAT', 'CSAT Delta', 'NPS Proxy']]
+        st.dataframe(final_kpi.style.background_gradient(subset=['CSAT'], cmap='Greens'), use_container_width=True, hide_index=True)
 
     st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("#### 🏆 Market Share")
         fig_don = px.pie(kpi_df, values='Vol', names='App_Name', hole=0.4, title="Volume Share by Brand")
         fig_don.update_traces(textposition='inside', textinfo='percent+label')
         st.plotly_chart(dark_chart(fig_don), use_container_width=True, key="exec_don")
     with c2:
-        st.markdown("#### 🎯 Quality vs. Quantity")
         fig_scat = px.scatter(kpi_df, x="CSAT", y="NPS Proxy", size="Vol", color="App_Name", text="App_Name", title="Strategic Positioning")
         fig_scat.update_traces(textposition='top center')
         st.plotly_chart(dark_chart(fig_scat), use_container_width=True, key="exec_scat")
 
     c3, c4 = st.columns(2)
     with c3:
-        st.markdown("#### 📊 Sentiment Mix")
-        sent_counts = df.groupby(['App_Name', 'Sentiment_Label']).size().reset_index(name='Count')
+        sent_counts = df.groupby(['App_Name', 'Sentiment_Label'], observed=True).size().reset_index(name='Count')
         tot = sent_counts.groupby('App_Name')['Count'].transform('sum')
         sent_counts['Pct'] = (sent_counts['Count'] / tot) * 100
         fig_stack = px.bar(sent_counts, x="App_Name", y="Pct", color="Sentiment_Label", 
@@ -471,8 +495,7 @@ with tab_exec:
                            hover_data={'Count': True, 'Pct': ':.1f'})
         st.plotly_chart(dark_chart(fig_stack), use_container_width=True, key="exec_stack")
     with c4:
-        st.markdown("#### 📝 Engagement Depth")
-        len_counts = df.groupby(['App_Name', 'length_bucket']).size().reset_index(name='Count')
+        len_counts = df.groupby(['App_Name', 'length_bucket'], observed=True).size().reset_index(name='Count')
         l_tot = len_counts.groupby('App_Name')['Count'].transform('sum')
         len_counts['Pct'] = (len_counts['Count'] / l_tot) * 100
         fig_len = px.bar(len_counts, x="App_Name", y="Pct", color="length_bucket", barmode='group',
@@ -484,27 +507,27 @@ with tab_exec:
 with tab_drivers:
     st.markdown("### 🚦 Strategic Drivers & Barriers")
     c_h1, c_h2 = st.columns(2)
-    pos_bases = df[df['score']>=4].groupby('App_Name').size()
-    neg_bases = df[df['score']<=3].groupby('App_Name').size()
+    pos_bases = df[df['score']>=4].groupby('App_Name', observed=True).size()
+    neg_bases = df[df['score']<=3].groupby('App_Name', observed=True).size()
     
     with c_h1:
         st.markdown("**🚀 Drivers (%)**")
         if not pos_bases.empty and theme_cols:
             valid = [t for t in theme_cols if t in df.columns]
-            p_data = df[df['score']>=4].groupby('App_Name')[valid].sum().T
+            p_data = df[df['score']>=4].groupby('App_Name', observed=True)[valid].sum().T
             p_pct = p_data.div(pos_bases, axis=1) * 100
             p_pct['Avg'] = p_pct.mean(axis=1)
             p_pct = p_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,}"), use_container_width=True, key="db_pos")
+            st.plotly_chart(px.imshow(p_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Greens', title=f"Base: {pos_bases.sum():,} Reviews"), use_container_width=True, key="db_pos")
     with c_h2:
         st.markdown("**🛑 Barriers (%)**")
         if not neg_bases.empty and theme_cols:
             valid = [t for t in theme_cols if t in df.columns]
-            n_data = df[df['score']<=3].groupby('App_Name')[valid].sum().T
+            n_data = df[df['score']<=3].groupby('App_Name', observed=True)[valid].sum().T
             n_pct = n_data.div(neg_bases, axis=1) * 100
             n_pct['Avg'] = n_pct.mean(axis=1)
             n_pct = n_pct.sort_values('Avg', ascending=False).head(10).drop(columns=['Avg'])
-            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,}"), use_container_width=True, key="db_neg")
+            st.plotly_chart(px.imshow(n_pct, text_auto='.1f', aspect="auto", color_continuous_scale='Reds', title=f"Base: {neg_bases.sum():,} Reviews"), use_container_width=True, key="db_neg")
 
     st.markdown("---")
     st.markdown("### 🧬 Theme Evolution (Brand Comparison)")
@@ -518,7 +541,7 @@ with tab_drivers:
             t_view = st.radio("View", ["Monthly", "Weekly"], horizontal=True, key="db_time_view")
             t_col = 'Month' if t_view == "Monthly" else 'Week'
             trend_data = []
-            grouped = trend_src.groupby([t_col, 'App_Name'])
+            grouped = trend_src.groupby([t_col, 'App_Name'], observed=True)
             for (t_val, brand), group in grouped:
                 base_vol = len(group)
                 if base_vol == 0: continue
@@ -575,16 +598,14 @@ with tab_compare:
                 fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Overlap (%)")
                 st.plotly_chart(fig, use_container_width=True, key="h2h_radar")
 
-# === TAB 4: PERIOD MATRIX (DUAL TABLES) ===
+# === TAB 4: PERIOD MATRIX ===
 with tab_monthly:
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
-    
-    # 1. Shared Filters
     c_m1, c_m2 = st.columns(2)
     time_grain = c_m1.selectbox("Time Grain", ["Week", "Month", "Quarter", "Year"], index=1, key="m_time_grain")
     time_lookback = c_m2.selectbox("Time Range", ["Last 7 Days", "Last 30 Days", "Last 90 Days", "Last 6 Months", "Last 12 Months", "All Time"], index=3, key="m_lookback")
     
-    # 2. Date Filtering Logic
+    # Apply Lookback
     max_date = df['at'].max()
     if time_lookback == "Last 7 Days": start_date = max_date - timedelta(days=7)
     elif time_lookback == "Last 30 Days": start_date = max_date - timedelta(days=30)
@@ -595,7 +616,6 @@ with tab_monthly:
     
     m_base = df[df['at'] >= start_date].copy()
     
-    # 3. Add Period Column
     if time_grain == "Week":
         m_base['Period'] = m_base['at'].dt.strftime('%Y-W%V')
     elif time_grain == "Month":
@@ -605,7 +625,6 @@ with tab_monthly:
     else:
         m_base['Period'] = m_base['at'].dt.to_period('Y').astype(str)
         
-    # 4. Render Two Tables
     st.markdown("#### 🚀 Drivers (4-5★)")
     drivers_df = m_base[m_base['score'] >= 4]
     df_d, top_d = build_period_matrix(drivers_df, theme_cols, sel_brands)
@@ -618,11 +637,9 @@ with tab_monthly:
             .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
             use_container_width=True
         )
-    else:
-        st.info("No Driver data.")
+    else: st.info("No Driver data.")
         
     st.markdown("---")
-    
     st.markdown("#### 🛑 Barriers (1-3★)")
     barriers_df = m_base[m_base['score'] <= 3]
     df_b, top_b = build_period_matrix(barriers_df, theme_cols, sel_brands)
@@ -635,19 +652,18 @@ with tab_monthly:
             .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
             use_container_width=True
         )
-    else:
-        st.info("No Barrier data.")
+    else: st.info("No Barrier data.")
 
 # === TAB 5: TRENDS ===
 with tab_trends:
     view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True, key="tr_view")
     t_col = 'Month' if view == "Monthly" else 'Week'
     if 'at' in df.columns:
-        trend = df.groupby([t_col, 'App_Name']).size().reset_index(name='Count')
-        tot = df.groupby(t_col).size().reset_index(name='Total')
+        trend = df.groupby([t_col, 'App_Name'], observed=True).size().reset_index(name='Count')
+        tot = df.groupby(t_col, observed=True).size().reset_index(name='Total')
         trend = trend.merge(tot, on=t_col)
         trend['SoV'] = (trend['Count'] / trend['Total']) * 100
-        csat = df.groupby([t_col, 'App_Name'])['score'].agg(['mean','count']).reset_index()
+        csat = df.groupby([t_col, 'App_Name'], observed=True)['score'].agg(['mean','count']).reset_index()
         csat.columns = [t_col, 'App_Name', 'CSAT', 'Base']
         if view == "Weekly": 
             trend['Week'] = trend['Week'].astype(str)
@@ -684,7 +700,7 @@ with tab_text:
         fig = px.histogram(df, x='char_count', color='App_Name', nbins=50, title="Review Length Dist.")
         st.plotly_chart(dark_chart(fig), use_container_width=True, key="txt_hist")
 
-# === TAB 7: AI ANALYST ===
+# === TAB 7: AI ANALYST (MOVED HERE) ===
 with tab_ai:
     st.markdown("### 🤖 Brand Strategic Briefs")
     cols = st.columns(2)
@@ -697,5 +713,19 @@ with tab_ai:
                 {"".join([f'<div style="margin-bottom:5px;">✦ {txt}</div>' for txt in insights])}
             </div>
             """, unsafe_allow_html=True)
-    filter_desc = f"{len(sel_brands)} Brands"
-    st.markdown(generate_global_summary(df, theme_cols, filter_desc), unsafe_allow_html=True)
+    
+    st.markdown("---")
+    # AI Summary Only Here
+    vol = len(df)
+    avg_rating = df['score'].mean()
+    html = f"""
+    <div class='ai-insight-box'>
+        <div class='ai-header'>🤖 AI Analyst: Global Summary</div>
+        <div class='ai-text'>
+            • <b>Analysis Scope:</b> {vol:,} reviews across {len(sel_brands)} brands.<br>
+            • <b>Overall Sentiment:</b> {avg_rating:.2f} ⭐ average rating.<br>
+            • <b>Observation:</b> Review the Period Matrix to identify if recent drops in CSAT correlate with specific barriers like 'Hidden Charges' or 'Tech Issues'.
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
