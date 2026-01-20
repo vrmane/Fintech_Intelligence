@@ -128,15 +128,10 @@ def load_data():
     if not all_rows: return pd.DataFrame()
     df = pd.DataFrame(all_rows)
 
-    # --- IST DATE HANDLING ---
     ist = pytz.timezone('Asia/Kolkata')
     
     if 'Review_Date' in df.columns:
-        # 1. Convert to Datetime (Coerce errors)
         df['at'] = pd.to_datetime(df['Review_Date'], errors='coerce')
-        
-        # 2. Localize/Convert to IST
-        # If date is naive (no timezone), assume UTC first then convert
         if df['at'].dt.tz is None:
             df['at'] = df['at'].dt.tz_localize('UTC').dt.tz_convert(ist)
         else:
@@ -144,14 +139,10 @@ def load_data():
             
         mask = df['at'].isna()
         if mask.any():
-            # Retry fallback format if needed
             df.loc[mask, 'at'] = pd.to_datetime(df.loc[mask, 'Review_Date'], format='%d-%m-%Y', errors='coerce').dt.tz_localize('UTC').dt.tz_convert(ist)
             
         df = df.dropna(subset=['at'])
-        
-        # 3. Create Time Columns based on IST
         df['Month'] = df['at'].dt.strftime('%Y-%m')
-        # ISO Week Number for standards
         df['Week'] = df['at'].dt.strftime('%Y-W%V')
 
     if 'Rating' in df.columns:
@@ -200,7 +191,7 @@ if df_raw.empty:
     st.stop()
 
 # ==========================================
-# 5. VISUALIZATION FUNCTIONS (UPDATED FOR LABELS)
+# 5. VISUALIZATION FUNCTIONS
 # ==========================================
 def dark_chart(fig):
     fig.update_layout(
@@ -266,36 +257,50 @@ def get_brand_insights(df, brand, theme_cols):
             insights.append(f"**Risk:** <span style='color:#f87171'>{top_b}</span> (**{pct:.0f}%** of negative)")
     return insights
 
-def generate_global_summary(df, theme_cols, current_filters):
-    if df.empty: return "No data."
-    avg_rating = df['score'].mean()
-    vol = len(df)
-    leader = df.groupby('App_Name')['score'].mean().idxmax()
+# === NEW: Helper for Building Period Matrix ===
+def build_period_matrix(sub_df, theme_cols, sel_brands):
+    if sub_df.empty or not theme_cols:
+        return None, None
+
+    periods = sorted(sub_df['Period'].unique())
+    base_matrix = sub_df.groupby(['Period', 'App_Name']).size().unstack(fill_value=0)
     
-    pos_df = df[df['score'] >= 4]
-    top_driver = "N/A"
-    if not pos_df.empty and theme_cols:
-        valid = [t for t in theme_cols if t in pos_df.columns]
-        if valid: top_driver = pos_df[valid].sum().idxmax()
-            
-    neg_df = df[df['score'] <= 3]
-    top_barrier = "N/A"
-    if not neg_df.empty and theme_cols:
-        valid = [t for t in theme_cols if t in neg_df.columns]
-        if valid: top_barrier = neg_df[valid].sum().idxmax()
-            
-    html = f"""
-    <div class='ai-insight-box'>
-        <div class='ai-header'>🤖 AI Analyst: Global Strategic Brief</div>
-        <div class='ai-text'>
-            • <b>Context:</b> Analyzing <b>{vol:,}</b> reviews ({current_filters}). Category CSAT: <b>{avg_rating:.2f} ⭐</b>.<br>
-            • <b>Leader:</b> <b>{leader}</b> is currently setting the benchmark for satisfaction.<br>
-            • <b>Market Driver:</b> <b>'{top_driver}'</b> is the key sentiment engine.<br>
-            • <b>Market Barrier:</b> <b>'{top_barrier}'</b> is the top friction point.
-        </div>
-    </div>
-    """
-    return html
+    valid = [t for t in theme_cols if t in sub_df.columns]
+    top_themes = sub_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
+    
+    data = []
+    base_row_data = {}
+    
+    # Build Base Row
+    for p in periods:
+        for b in sel_brands:
+            if b not in base_matrix.columns: continue
+            val = base_matrix.loc[p, b]
+            base_row_data[(p, b)] = val
+
+    # Build Theme Rows
+    for theme in top_themes:
+        row = {}
+        for p in periods:
+            for b in sel_brands:
+                if b not in base_matrix.columns: continue
+                mask = (sub_df['Period'] == p) & (sub_df['App_Name'] == b)
+                count = sub_df[mask][theme].sum()
+                base = base_matrix.loc[p, b]
+                val = (count / base * 100) if base > 0 else 0
+                row[(p, b)] = val
+        data.append(row)
+        
+    final_df = pd.DataFrame(data, index=top_themes)
+    final_df.columns = pd.MultiIndex.from_tuples(final_df.columns)
+    final_df = final_df.sort_index(axis=1)
+    
+    base_row_df = pd.DataFrame([base_row_data], index=["Base (N)"])
+    base_row_df.columns = pd.MultiIndex.from_tuples(base_row_df.columns)
+    base_row_df = base_row_df.reindex(columns=final_df.columns)
+    
+    combined_df = pd.concat([base_row_df, final_df])
+    return combined_df, top_themes
 
 # ==========================================
 # 6. SIDEBAR & FILTERS
@@ -305,7 +310,6 @@ with st.sidebar:
     st.success(f"🟢 Live: {len(df_raw):,} Rows")
     st.markdown("---")
     
-    # Range is applied globally
     min_d, max_d = df_raw['at'].min().date(), df_raw['at'].max().date()
     date_range = st.date_input("Period", [min_d, max_d], min_value=min_d, max_value=max_d)
     
@@ -343,9 +347,9 @@ theme_cols = st.session_state.get('theme_cols', [])
 # ==========================================
 st.title("🦅 Strategic Intelligence Platform")
 
-# LAST FETCHED TIMESTAMP
+# Timestamp
 last_time = st.session_state.get('last_fetched', 'Just now')
-st.markdown(f"<div class='timestamp-box'>Data Last Fetched: {last_time} (IST)</div>", unsafe_allow_html=True)
+st.markdown(f"<div class='timestamp-box'>Data Last Fetched: {last_time}</div>", unsafe_allow_html=True)
 
 tab_exec, tab_drivers, tab_compare, tab_monthly, tab_trends, tab_text, tab_ai = st.tabs([
     "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Period-Over-Period Matrix", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
@@ -515,27 +519,16 @@ with tab_compare:
                 fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Overlap (%)")
                 st.plotly_chart(fig, use_container_width=True, key="h2h_radar")
 
-# === TAB 4: PERIOD MATRIX (INTEGRATED BASE) ===
+# === TAB 4: PERIOD MATRIX (DUAL TABLES) ===
 with tab_monthly:
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
     
-    # 1. Filters
-    c_m1, c_m2, c_m3 = st.columns(3)
-    rep_type = c_m1.radio("Focus", ["Drivers (4-5★)", "Barriers (1-3★)"], horizontal=True, key="m_rep_type")
+    # 1. Shared Filters
+    c_m1, c_m2 = st.columns(2)
+    time_grain = c_m1.selectbox("Time Grain", ["Week", "Month", "Quarter", "Year"], index=1, key="m_time_grain")
+    time_lookback = c_m2.selectbox("Time Range", ["Last 7 Days", "Last 30 Days", "Last 90 Days", "Last 6 Months", "Last 12 Months", "All Time"], index=3, key="m_lookback")
     
-    time_grain = c_m2.selectbox("Time Grain", ["Week", "Month", "Quarter", "Year"], index=1, key="m_time_grain")
-    
-    time_lookback = c_m3.selectbox("Time Range", ["Last 7 Days", "Last 30 Days", "Last 90 Days", "Last 6 Months", "Last 12 Months", "All Time"], index=3, key="m_lookback")
-    
-    # 2. Filter Logic
-    if rep_type == "Drivers (4-5★)":
-        m_df = df[df['score'] >= 4]
-        color_scale = 'Greens'
-    else:
-        m_df = df[df['score'] <= 3]
-        color_scale = 'Reds'
-        
-    # Apply Lookback
+    # 2. Date Filtering Logic
     max_date = df['at'].max()
     if time_lookback == "Last 7 Days": start_date = max_date - timedelta(days=7)
     elif time_lookback == "Last 30 Days": start_date = max_date - timedelta(days=30)
@@ -543,74 +536,51 @@ with tab_monthly:
     elif time_lookback == "Last 6 Months": start_date = max_date - timedelta(days=180)
     elif time_lookback == "Last 12 Months": start_date = max_date - timedelta(days=365)
     else: start_date = df['at'].min()
-    m_df = m_df[m_df['at'] >= start_date]
     
-    # 3. Group by Time Grain
+    m_base = df[df['at'] >= start_date].copy()
+    
+    # 3. Add Period Column
     if time_grain == "Week":
-        m_df['Period'] = m_df['at'].dt.strftime('%Y-W%V') # ISO Week
+        m_base['Period'] = m_base['at'].dt.strftime('%Y-W%V')
     elif time_grain == "Month":
-        m_df['Period'] = m_df['at'].dt.to_period('M').astype(str)
+        m_base['Period'] = m_base['at'].dt.to_period('M').astype(str)
     elif time_grain == "Quarter":
-        m_df['Period'] = m_df['at'].dt.to_period('Q').astype(str)
+        m_base['Period'] = m_base['at'].dt.to_period('Q').astype(str)
     else:
-        m_df['Period'] = m_df['at'].dt.to_period('Y').astype(str)
+        m_base['Period'] = m_base['at'].dt.to_period('Y').astype(str)
         
-    # 4. Build Table
-    if not m_df.empty and theme_cols:
-        periods = sorted(m_df['Period'].unique())
-        base_matrix = m_df.groupby(['Period', 'App_Name']).size().unstack(fill_value=0)
-        
-        valid = [t for t in theme_cols if t in m_df.columns]
-        top_m_themes = m_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
-        
-        # Build Data
-        data = []
-        
-        # 1. Base Row
-        base_row_data = {}
-        for p in periods:
-            for b in sel_brands:
-                if b not in base_matrix.columns: continue
-                val = base_matrix.loc[p, b]
-                base_row_data[(p, b)] = val # Raw int
-        
-        # 2. Perc Rows
-        for theme in top_m_themes:
-            row = {}
-            for p in periods:
-                for b in sel_brands:
-                    if b not in base_matrix.columns: continue
-                    mask = (m_df['Period'] == p) & (m_df['App_Name'] == b)
-                    count = m_df[mask][theme].sum()
-                    base = base_matrix.loc[p, b]
-                    val = (count / base * 100) if base > 0 else 0
-                    row[(p, b)] = val
-            data.append(row)
-            
-        final_df = pd.DataFrame(data, index=top_m_themes)
-        final_df.columns = pd.MultiIndex.from_tuples(final_df.columns)
-        final_df = final_df.sort_index(axis=1)
-        
-        # Insert Base Row
-        base_row_df = pd.DataFrame([base_row_data], index=["Base (N)"])
-        base_row_df.columns = pd.MultiIndex.from_tuples(base_row_df.columns)
-        base_row_df = base_row_df.reindex(columns=final_df.columns) # Align
-        
-        # Concatenate: Base + Data
-        combined_df = pd.concat([base_row_df, final_df])
-        
-        # Apply Styling
-        st.markdown(f"**Top 20 {rep_type} by {time_grain}**")
+    # 4. Render Two Tables
+    st.markdown("#### 🚀 Drivers (4-5★)")
+    drivers_df = m_base[m_base['score'] >= 4]
+    df_d, top_d = build_period_matrix(drivers_df, theme_cols, sel_brands)
+    if df_d is not None:
         st.dataframe(
-            combined_df.style
-            .background_gradient(cmap=color_scale, subset=pd.IndexSlice[top_m_themes, :], axis=None) # Color only themes
-            .format("{:.1f}", subset=pd.IndexSlice[top_m_themes, :]) # Format themes as float
-            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :]) # Format base as int
+            df_d.style
+            .background_gradient(cmap='Greens', subset=pd.IndexSlice[top_d, :], axis=None)
+            .format("{:.1f}", subset=pd.IndexSlice[top_d, :])
+            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :])
             .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
             use_container_width=True
         )
     else:
-        st.info("No data for selected range.")
+        st.info("No Driver data.")
+        
+    st.markdown("---")
+    
+    st.markdown("#### 🛑 Barriers (1-3★)")
+    barriers_df = m_base[m_base['score'] <= 3]
+    df_b, top_b = build_period_matrix(barriers_df, theme_cols, sel_brands)
+    if df_b is not None:
+        st.dataframe(
+            df_b.style
+            .background_gradient(cmap='Reds', subset=pd.IndexSlice[top_b, :], axis=None)
+            .format("{:.1f}", subset=pd.IndexSlice[top_b, :])
+            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :])
+            .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
+            use_container_width=True
+        )
+    else:
+        st.info("No Barrier data.")
 
 # === TAB 5: TRENDS ===
 with tab_trends:
@@ -671,5 +641,3 @@ with tab_ai:
                 {"".join([f'<div style="margin-bottom:5px;">✦ {txt}</div>' for txt in insights])}
             </div>
             """, unsafe_allow_html=True)
-    filter_desc = f"{len(sel_brands)} Brands"
-    st.markdown(generate_global_summary(df, theme_cols, filter_desc), unsafe_allow_html=True)
