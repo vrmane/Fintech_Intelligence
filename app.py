@@ -24,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CEO-GRADE CSS (Includes Tab Stabilization) ---
+# --- CEO-GRADE CSS ---
 st.markdown("""
     <style>
         .stApp { background-color: #0b0f19; color: #e2e8f0; }
@@ -71,45 +71,6 @@ st.markdown("""
         hr { margin: 2em 0; border-color: #334155; }
         h1, h2, h3, h4 { color: #f8fafc; font-family: 'Inter', sans-serif; }
         .stCaption { font-size: 0.9em; color: #94a3b8; font-style: italic; }
-        
-        /* NAVIGATION STABILIZATION CSS */
-        /* Hides the radio circle to look like tabs */
-        div[role="radiogroup"] > label > div:first-child {
-            display: none !important;
-        }
-        div[role="radiogroup"] {
-            background-color: #1e293b;
-            padding: 8px;
-            border-radius: 12px;
-            display: flex;
-            justify-content: space-around;
-            margin-bottom: 20px;
-            border: 1px solid #334155;
-        }
-        div[role="radiogroup"] label {
-            flex: 1;
-            text-align: center;
-            padding: 10px;
-            border-radius: 8px;
-            border: 1px solid transparent;
-            transition: all 0.2s ease;
-            margin: 0 4px;
-            color: #94a3b8 !important;
-        }
-        div[role="radiogroup"] label:hover {
-            background-color: #334155;
-            color: #fff !important;
-        }
-        /* Active Tab Style */
-        div[role="radiogroup"] label[data-checked="true"] {
-            background-color: #38bdf8 !important;
-            color: #0f172a !important;
-            font-weight: bold;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-        }
-        div[role="radiogroup"] label[data-checked="true"] p {
-            color: #0f172a !important;
-        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -316,7 +277,7 @@ def generate_global_summary(df, theme_cols, current_filters):
     return html
 
 def build_period_matrix(sub_df, theme_cols, sel_brands):
-    # Safety: If sub_df is empty or no themes
+    # Safety Check
     if not theme_cols: return None, None
     if sub_df.empty: return None, None
     
@@ -330,7 +291,6 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
     data = []
     base_row_data = {}
     
-    # 1. Build Base Row (safe lookup)
     for p in periods:
         for b in sel_brands:
             if b in base_matrix.columns:
@@ -338,14 +298,12 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
             else:
                 base_row_data[(p, b)] = 0
     
-    # 2. Build Data Rows
     for theme in top_themes:
         row = {}
         for p in periods:
             for b in sel_brands:
                 val = 0
                 if b in base_matrix.columns:
-                    # Optimized boolean mask
                     mask = (sub_df['Period'] == p) & (sub_df['App_Name'] == b)
                     if mask.any():
                         count = sub_df.loc[mask, theme].sum()
@@ -369,7 +327,6 @@ def build_period_matrix(sub_df, theme_cols, sel_brands):
 def build_brand_matrix(sub_df, theme_cols, sel_brands):
     if not theme_cols: return None, None
     
-    # Even if sub_df is empty, we show structure with 0s
     if sub_df.empty:
         base_counts = pd.Series(0, index=sel_brands)
         top_themes = []
@@ -461,10 +418,8 @@ def build_brand_breakdown_matrix(sub_df, theme_cols, top_themes, brands):
 def build_impact_matrix(df, theme_cols):
     if df.empty or not theme_cols: return None
     
-    # Robust check for columns
     valid = [t for t in theme_cols if t in df.columns]
     if not valid:
-        # Fallback check for integer columns
         valid = [c for c in df.columns if df[c].nunique() <= 2 and df[c].dtype in [np.int64, np.int32, np.float64, np.int8]]
         if not valid: return None
 
@@ -475,11 +430,9 @@ def build_impact_matrix(df, theme_cols):
         try:
             series = pd.to_numeric(df[t], errors='coerce').fillna(0)
             count = series.sum()
-            
             if count > 0:
                 avg = df.loc[series == 1, 'score'].mean()
                 if pd.isna(avg): avg = 0
-                
                 stats.append({
                     'Theme': t,
                     'Frequency (%)': (count / total) * 100,
@@ -558,7 +511,7 @@ df = df_raw[mask].copy()
 theme_cols = st.session_state.get('theme_cols', [])
 
 # ==========================================
-# 6. DASHBOARD MAIN UI (STATE STABILIZED)
+# 6. DASHBOARD
 # ==========================================
 st.title("🦅 Strategic Intelligence Platform")
 
@@ -566,24 +519,12 @@ st.title("🦅 Strategic Intelligence Platform")
 last_time = st.session_state.get('last_fetched', 'Just now')
 st.markdown(f"<div class='timestamp-box'><span class='live-dot'></span>Data Last Fetched: {last_time}</div>", unsafe_allow_html=True)
 
-# --- REPLACED st.tabs WITH PERSISTENT NAV ---
-nav_options = [
-    "📊 Boardroom Summary", 
-    "🚀 Drivers & Barriers", 
-    "⚔️ Head-to-Head", 
-    "📅 Period-Over-Period Matrix", 
-    "📈 Trends", 
-    "🔡 Text Analytics", 
-    "🤖 AI Analyst"
-]
-
-# Use radio but style it like tabs via CSS
-active_tab = st.radio("Navigation", nav_options, horizontal=True, label_visibility="collapsed", key="main_nav")
-
-st.markdown("---")
+tab_exec, tab_drivers, tab_compare, tab_monthly, tab_trends, tab_text, tab_ai = st.tabs([
+    "📊 Boardroom Summary", "🚀 Drivers & Barriers", "⚔️ Head-to-Head", "📅 Period-Over-Period Matrix", "📈 Trends", "🔡 Text Analytics", "🤖 AI Analyst"
+])
 
 # === TAB 1: BOARDROOM ===
-if active_tab == "📊 Boardroom Summary":
+with tab_exec:
     curr_vol, delta_vol = calculate_delta(df, 'score', 'count')
     curr_csat, delta_csat = calculate_delta(df, 'score', 'mean')
     k1, k2, k3, k4 = st.columns(4)
@@ -663,7 +604,7 @@ if active_tab == "📊 Boardroom Summary":
         st.plotly_chart(dark_chart(fig_len), use_container_width=True, key="exec_len")
 
 # === TAB 2: DRIVERS & BARRIERS ===
-elif active_tab == "🚀 Drivers & Barriers":
+with tab_drivers:
     st.markdown("### 🚦 Strategic Landscape")
     
     st.markdown("#### 🎯 Strategic Impact Matrix (Frequency vs. Rating Impact)")
@@ -678,13 +619,7 @@ elif active_tab == "🚀 Drivers & Barriers":
         fig_imp.update_traces(textposition='top center')
         st.plotly_chart(dark_chart(fig_imp), use_container_width=True, key="impact_matrix")
     else:
-        st.warning("⚠️ **Low Signal Warning:** Reviews found, but no specific Driver/Barrier tags detected in this selection.")
-        with st.expander("🔍 Debugging Info"):
-            st.write(f"Total Reviews: {len(df)}")
-            if theme_cols:
-                st.write(f"Themes Configured: {len(theme_cols)}")
-            else:
-                st.write("No theme columns detected.")
+        st.warning("Insufficient data for Impact Matrix. Select more data or check if themes are tagged.")
 
     st.markdown("---")
     
@@ -725,8 +660,38 @@ elif active_tab == "🚀 Drivers & Barriers":
             bdf = build_brand_breakdown_matrix(neg_df, theme_cols, agg_barriers['Theme'].tolist(), sel_brands)
             st.dataframe(bdf.style.background_gradient(cmap='Reds', axis=None).format("{:.1f}", subset=pd.IndexSlice[agg_barriers['Theme'].tolist(), :]).format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :]), use_container_width=True)
 
+    # RE-ADDED: Theme Evolution Trend
+    st.markdown("---")
+    st.markdown("### 🧬 Theme Evolution (Brand Comparison)")
+    evo_type = st.radio("Category", ["Drivers (Positive)", "Barriers (Negative)"], horizontal=True, key="db_evo_type")
+    trend_src = df[df['score'] >= 4] if "Positive" in evo_type else df[df['score'] <= 3]
+
+    if not trend_src.empty and theme_cols:
+        top_opts = trend_src[theme_cols].sum().sort_values(ascending=False).head(20).index.tolist()
+        sel_theme = st.selectbox("Select Theme to Compare Trends", top_opts, key="db_theme_sel")
+        if sel_theme:
+            t_view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True, key="db_time_view_2")
+            t_col = 'Month' if t_view == "Monthly" else 'Week'
+            trend_data = []
+            grouped = trend_src.groupby([t_col, 'App_Name'], observed=True)
+            for (t_val, brand), group in grouped:
+                base_vol = len(group)
+                if base_vol == 0: continue
+                if sel_theme in group.columns:
+                    count = group[sel_theme].sum()
+                    pct = (count / base_vol) * 100
+                    trend_data.append({t_col: str(t_val), "App_Name": brand, "Prevalence": pct, "Base": base_vol})
+            if trend_data:
+                plot_df = pd.DataFrame(trend_data).sort_values(t_col)
+                fig_evo = px.line(plot_df, x=t_col, y="Prevalence", color="App_Name", markers=True, 
+                                  title=f"Evolution of '{sel_theme}' (%) across Brands", 
+                                  text="Prevalence",
+                                  hover_data={"Base": True, "Prevalence": ":.1f"})
+                fig_evo.update_traces(textposition="top center", texttemplate='%{text:.1f}')
+                st.plotly_chart(dark_chart(fig_evo), use_container_width=True, key="db_evo_chart")
+
 # === TAB 3: HEAD TO HEAD ===
-elif active_tab == "⚔️ Head-to-Head":
+with tab_compare:
     c1, c2 = st.columns(2)
     with c1: b1 = st.selectbox("Brand A", sel_brands, index=0 if sel_brands else None, key="h2h_b1")
     with c2: b2 = st.selectbox("Brand B", [b for b in sel_brands if b!=b1], index=0 if len(sel_brands)>1 else None, key="h2h_b2")
@@ -789,7 +754,7 @@ elif active_tab == "⚔️ Head-to-Head":
         st.plotly_chart(dark_chart(fig_trend), use_container_width=True, key="h2h_trend")
 
 # === TAB 4: PERIOD MATRIX ===
-elif active_tab == "📅 Period-Over-Period Matrix":
+with tab_monthly:
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
     st.caption("View how theme intensity changes over time. First row is the Base (N) count.")
     c_m1, c_m2 = st.columns(2)
@@ -815,7 +780,14 @@ elif active_tab == "📅 Period-Over-Period Matrix":
     drivers_df = m_base[m_base['score'] >= 4]
     df_d, top_d = build_period_matrix(drivers_df, theme_cols, sel_brands)
     if df_d is not None:
-        st.dataframe(df_d.style.background_gradient(cmap='Greens', subset=pd.IndexSlice[top_d, :], axis=None).format("{:.1f}", subset=pd.IndexSlice[top_d, :]).format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :]).set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}), use_container_width=True)
+        st.dataframe(
+            df_d.style
+            .background_gradient(cmap='Greens', subset=pd.IndexSlice[top_d, :], axis=None)
+            .format("{:.1f}", subset=pd.IndexSlice[top_d, :])
+            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :])
+            .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
+            use_container_width=True
+        )
     else: st.info("No Driver data.")
         
     st.markdown("---")
@@ -823,11 +795,18 @@ elif active_tab == "📅 Period-Over-Period Matrix":
     barriers_df = m_base[m_base['score'] <= 3]
     df_b, top_b = build_period_matrix(barriers_df, theme_cols, sel_brands)
     if df_b is not None:
-        st.dataframe(df_b.style.background_gradient(cmap='Reds', subset=pd.IndexSlice[top_b, :], axis=None).format("{:.1f}", subset=pd.IndexSlice[top_b, :]).format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :]).set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}), use_container_width=True)
+        st.dataframe(
+            df_b.style
+            .background_gradient(cmap='Reds', subset=pd.IndexSlice[top_b, :], axis=None)
+            .format("{:.1f}", subset=pd.IndexSlice[top_b, :])
+            .format("{:.0f}", subset=pd.IndexSlice[['Base (N)'], :])
+            .set_properties(subset=pd.IndexSlice[['Base (N)'], :], **{'background-color': '#fff2cc', 'color': 'black', 'font-weight': 'bold'}),
+            use_container_width=True
+        )
     else: st.info("No Barrier data.")
 
 # === TAB 5: TRENDS ===
-elif active_tab == "📈 Trends":
+with tab_trends:
     view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True, key="tr_view")
     t_col = 'Month' if view == "Monthly" else 'Week'
     if 'at' in df.columns:
@@ -853,7 +832,7 @@ elif active_tab == "📈 Trends":
             st.plotly_chart(dark_chart(fig_csat), use_container_width=True, key="tr_csat")
 
 # === TAB 6: TEXT ANALYTICS ===
-elif active_tab == "🔡 Text Analytics":
+with tab_text:
     st.markdown("### 🔡 Deep Text Analytics")
     c1, c2 = st.columns(2)
     with c1:
@@ -876,7 +855,7 @@ elif active_tab == "🔡 Text Analytics":
         st.plotly_chart(dark_chart(fig), use_container_width=True, key="txt_hist")
 
 # === TAB 7: AI ANALYST ===
-elif active_tab == "🤖 AI Analyst":
+with tab_ai:
     st.markdown("### 🤖 Brand Strategic Briefs")
     cols = st.columns(2)
     for i, brand in enumerate(sel_brands):
