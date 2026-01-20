@@ -267,6 +267,38 @@ def get_brand_insights(df, brand, theme_cols):
             insights.append(f"**Risk:** <span style='color:#f87171'>{top_b}</span> (**{pct:.0f}%** of negative)")
     return insights
 
+# === REINSTATED FUNCTION ===
+def generate_global_summary(df, theme_cols, current_filters):
+    if df.empty: return "No data."
+    avg_rating = df['score'].mean()
+    vol = len(df)
+    leader = df.groupby('App_Name', observed=True)['score'].mean().idxmax()
+    
+    pos_df = df[df['score'] >= 4]
+    top_driver = "N/A"
+    if not pos_df.empty and theme_cols:
+        valid = [t for t in theme_cols if t in pos_df.columns]
+        if valid: top_driver = pos_df[valid].sum().idxmax()
+            
+    neg_df = df[df['score'] <= 3]
+    top_barrier = "N/A"
+    if not neg_df.empty and theme_cols:
+        valid = [t for t in theme_cols if t in neg_df.columns]
+        if valid: top_barrier = neg_df[valid].sum().idxmax()
+            
+    html = f"""
+    <div class='ai-insight-box'>
+        <div class='ai-header'>🤖 AI Analyst: Global Strategic Brief</div>
+        <div class='ai-text'>
+            • <b>Context:</b> Analyzing <b>{vol:,}</b> reviews ({current_filters}). Category CSAT: <b>{avg_rating:.2f} ⭐</b>.<br>
+            • <b>Leader:</b> <b>{leader}</b> is currently setting the benchmark for satisfaction.<br>
+            • <b>Market Driver:</b> <b>'{top_driver}'</b> is the key sentiment engine.<br>
+            • <b>Market Barrier:</b> <b>'{top_barrier}'</b> is the top friction point.
+        </div>
+    </div>
+    """
+    return html
+
 def build_period_matrix(sub_df, theme_cols, sel_brands):
     if sub_df.empty or not theme_cols: return None, None
     periods = sorted(sub_df['Period'].unique())
@@ -350,31 +382,25 @@ def build_brand_breakdown_matrix(sub_df, theme_cols, top_themes, brands):
 
 def build_impact_matrix(df, theme_cols):
     if df.empty or not theme_cols: return None
-    
-    # 1. Frequency (Pct of Total)
     valid = [t for t in theme_cols if t in df.columns]
     total = len(df)
     counts = df[valid].sum()
     freq_pct = (counts / total) * 100
     
-    # 2. Impact (Avg Rating when Present)
     impacts = {}
     for t in valid:
-        # Only calc if freq > 0
         if counts[t] > 0:
             avg = df[df[t]==1]['score'].mean()
             impacts[t] = avg
         else:
             impacts[t] = 0
             
-    # Combine
     plot_df = pd.DataFrame({
         'Theme': valid,
         'Frequency (%)': freq_pct,
         'Avg Rating When Present': pd.Series(impacts)
     })
     
-    # Filter out 0 freq
     plot_df = plot_df[plot_df['Frequency (%)'] > 0].sort_values('Frequency (%)', ascending=False).head(30)
     return plot_df
 
@@ -405,6 +431,7 @@ with st.sidebar:
         sel_prods = st.multiselect("Product Type", all_prods)
     else: sel_prods = []
 
+# GLOBAL FILTER APPLICATION
 if len(date_range) == 2:
     start_date = pd.to_datetime(date_range[0]).tz_localize('Asia/Kolkata')
     end_date = pd.to_datetime(date_range[1]).tz_localize('Asia/Kolkata') + timedelta(days=1) - timedelta(seconds=1)
@@ -468,7 +495,6 @@ with tab_exec:
     if deltas:
         delta_df = pd.DataFrame(deltas)
         final_kpi = kpi_df.merge(delta_df, on='App_Name')[['App_Name', 'Vol', 'Vol Delta', 'CSAT', 'CSAT Delta', 'NPS Proxy']]
-        # Styled Table with Download
         st.dataframe(final_kpi.style.background_gradient(subset=['CSAT'], cmap='Greens'), use_container_width=True, hide_index=True)
         st.download_button("📥 Download Brand Pulse CSV", final_kpi.to_csv(index=False), "brand_pulse.csv")
 
@@ -483,11 +509,30 @@ with tab_exec:
         fig_scat.update_traces(textposition='top center')
         st.plotly_chart(dark_chart(fig_scat), use_container_width=True, key="exec_scat")
 
-# === TAB 2: DRIVERS & BARRIERS (IMPACT MATRIX) ===
+    c3, c4 = st.columns(2)
+    with c3:
+        sent_counts = df.groupby(['App_Name', 'Sentiment_Label'], observed=True).size().reset_index(name='Count')
+        tot = sent_counts.groupby('App_Name')['Count'].transform('sum')
+        sent_counts['Pct'] = (sent_counts['Count'] / tot) * 100
+        fig_stack = px.bar(sent_counts, x="App_Name", y="Pct", color="Sentiment_Label", 
+                           color_discrete_map={'Positive': '#10b981', 'Neutral': '#64748b', 'Negative': '#ef4444'},
+                           title="Sentiment Ratio (%)", text_auto='.0f',
+                           hover_data={'Count': True, 'Pct': ':.1f'})
+        st.plotly_chart(dark_chart(fig_stack), use_container_width=True, key="exec_stack")
+    with c4:
+        len_counts = df.groupby(['App_Name', 'length_bucket'], observed=True).size().reset_index(name='Count')
+        l_tot = len_counts.groupby('App_Name')['Count'].transform('sum')
+        len_counts['Pct'] = (len_counts['Count'] / l_tot) * 100
+        fig_len = px.bar(len_counts, x="App_Name", y="Pct", color="length_bucket", barmode='group',
+                         title="Brief vs Detailed (%)", text_auto='.0f',
+                         hover_data={'Count': True, 'Pct': ':.1f'})
+        st.plotly_chart(dark_chart(fig_len), use_container_width=True, key="exec_len")
+
+# === TAB 2: DRIVERS & BARRIERS ===
 with tab_drivers:
     st.markdown("### 🚦 Strategic Landscape")
     
-    # IMPACT MATRIX (NEW)
+    # IMPACT MATRIX
     st.markdown("#### 🎯 Strategic Impact Matrix (Frequency vs. Rating Impact)")
     st.info("💡 **Top Right:** Key Drivers (High Freq, High Rating) | **Bottom Right:** Critical Issues (High Freq, Low Rating)")
     
@@ -496,7 +541,6 @@ with tab_drivers:
         fig_imp = px.scatter(impact_df, x="Frequency (%)", y="Avg Rating When Present", 
                              text="Theme", size="Frequency (%)", color="Avg Rating When Present",
                              color_continuous_scale="RdYlGn", title="Theme Impact Analysis")
-        # Add Reference Lines
         avg_rating = df['score'].mean()
         fig_imp.add_hline(y=avg_rating, line_dash="dash", annotation_text="Global Avg Rating")
         fig_imp.update_traces(textposition='top center')
@@ -506,7 +550,6 @@ with tab_drivers:
 
     st.markdown("---")
     
-    # MARKET & BRAND BREAKDOWN
     pos_df = df[df['score'] >= 4]
     neg_df = df[df['score'] <= 3]
     
@@ -613,9 +656,7 @@ with tab_trends:
     view = st.radio("Time View", ["Monthly", "Weekly"], horizontal=True, key="tr_view")
     t_col = 'Month' if view == "Monthly" else 'Week'
     if 'at' in df.columns:
-        # 1. Sentiment Composition Trend (Stacked Bar 100%)
         sent_trend = df.groupby([t_col, 'Sentiment_Label'], observed=True).size().reset_index(name='Count')
-        # Normalize
         totals = sent_trend.groupby(t_col)['Count'].transform('sum')
         sent_trend['Pct'] = (sent_trend['Count'] / totals) * 100
         
