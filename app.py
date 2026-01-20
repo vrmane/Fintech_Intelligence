@@ -278,7 +278,6 @@ with st.sidebar:
     st.success(f"🟢 Live: {len(df_raw):,} Rows")
     st.markdown("---")
     
-    # Range is applied globally
     min_d, max_d = df_raw['at'].min().date(), df_raw['at'].max().date()
     date_range = st.date_input("Period", [min_d, max_d], min_value=min_d, max_value=max_d)
     
@@ -487,7 +486,7 @@ with tab_compare:
                 fig.update_layout(polar=dict(radialaxis=dict(visible=True)), template="plotly_dark", title="Overlap (%)")
                 st.plotly_chart(fig, use_container_width=True, key="h2h_radar")
 
-# === TAB 4: PERIOD MATRIX (NEW HEATMAP) ===
+# === TAB 4: PERIOD MATRIX (TABLE VIEW) ===
 with tab_monthly:
     st.markdown("### 📅 Period-Over-Period Matrix (Percentage Only)")
     
@@ -534,81 +533,46 @@ with tab_monthly:
     else:
         m_df['Period'] = m_df['at'].dt.to_period('Y').astype(str)
         
-    # 4. Build Matrix using Heatmap Logic
+    # 4. Build Table
     if not m_df.empty and theme_cols:
         # Get Sorted Periods
         periods = sorted(m_df['Period'].unique())
         
         # Calculate Base per Cell (Brand x Period)
-        # We need this for the heatmap to normalize
-        base_df = m_df.groupby(['Period', 'App_Name']).size().reset_index(name='Base')
+        base_matrix = m_df.groupby(['Period', 'App_Name']).size().unstack(fill_value=0)
         
         # Get Top Themes
         valid = [t for t in theme_cols if t in m_df.columns]
         top_m_themes = m_df[valid].sum().sort_values(ascending=False).head(20).index.tolist()
         
-        # Create Data for Heatmap
-        # Rows: Themes
-        # Cols: Period | Brand
-        
-        heatmap_data = []
-        x_labels = []
-        y_labels = top_m_themes
-        
-        # Generate X-Axis Labels (Period | Brand)
-        for p in periods:
-            for b in sel_brands:
-                x_labels.append(f"{p} | {b}")
-                
-        # Fill Z-Matrix
-        z_matrix = []
-        hover_matrix = []
-        
-        for theme in y_labels:
-            z_row = []
-            hover_row = []
+        # Build Data for DataFrame
+        data = []
+        for theme in top_m_themes:
+            row = {}
             for p in periods:
                 for b in sel_brands:
-                    # Filter
+                    # Logic
+                    if b not in base_matrix.columns: continue
                     mask = (m_df['Period'] == p) & (m_df['App_Name'] == b)
-                    sub = m_df[mask]
-                    count = sub[theme].sum() if not sub.empty else 0
+                    count = m_df[mask][theme].sum()
+                    base = base_matrix.loc[p, b]
                     
-                    # Get Base
-                    base_row = base_df[(base_df['Period'] == p) & (base_df['App_Name'] == b)]
-                    base = base_row['Base'].values[0] if not base_row.empty else 0
-                    
-                    pct = (count / base * 100) if base > 0 else 0
-                    
-                    z_row.append(pct)
-                    hover_row.append(f"Theme: {theme}<br>Period: {p}<br>Brand: {b}<br>Val: {pct:.1f}%<br>Base: {base}")
+                    val = (count / base * 100) if base > 0 else 0
+                    # Store as Tuple key for MultiIndex later
+                    row[(p, b)] = val
+            data.append(row)
             
-            z_matrix.append(z_row)
-            hover_matrix.append(hover_row)
-            
-        # Plot Heatmap
-        fig_hm = go.Figure(data=go.Heatmap(
-            z=z_matrix,
-            x=x_labels,
-            y=y_labels,
-            text=[[f"{val:.1f}" if val > 0 else "" for val in row] for row in z_matrix],
-            texttemplate="%{text}",
-            colorscale=color_scale,
-            hovertemplate="%{customdata}<extra></extra>",
-            customdata=hover_matrix
-        ))
+        final_df = pd.DataFrame(data, index=top_m_themes)
+        # Create MultiIndex Columns
+        final_df.columns = pd.MultiIndex.from_tuples(final_df.columns)
+        # Sort Columns
+        final_df = final_df.sort_index(axis=1)
         
-        fig_hm.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(255,255,255,0.03)",
-            height=800,
-            xaxis_title="Period | Brand",
-            yaxis_title="Themes"
-        )
+        st.markdown(f"**Top 20 {rep_type} by {time_grain}** (Values are %)")
+        st.dataframe(final_df.style.background_gradient(cmap=color_scale, axis=None).format("{:.1f}"), use_container_width=True)
         
-        st.plotly_chart(fig_hm, use_container_width=True, key="monthly_heatmap")
-        
+        with st.expander("Show Base Sizes (N)"):
+            st.dataframe(base_matrix.T, use_container_width=True)
     else:
         st.info("No data for selected range.")
 
